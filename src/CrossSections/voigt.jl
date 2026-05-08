@@ -1,4 +1,5 @@
 using KernelAbstractions
+using Metal
 using SpecialFunctions: erfcx
 
 const _SQRT_LN2    = sqrt(log(2.0))
@@ -9,12 +10,12 @@ const _INV_SQRT_PI = inv(sqrt(π))
 
 Selects the algorithm used to evaluate the Voigt profile.
 
+- `FullFaddeeva`: Exact Faddeeva w(z) via `SpecialFunctions.erfcx`. Machine-precision
+                  accuracy; ~4.5× multi-thread speedup on CPU. **Default.**
 - `Weideman`    : Weideman (1994) 24-term rational approximation, ~1e-4 accuracy.
-                  GPU-compatible; no region switching; fastest option. **Default.**
+                  GPU-compatible (Float32 on Metal, Float64 on CUDA/ROCm).
 - `PseudoVoigt` : Thompson et al. (1987) pseudo-Voigt mixing η·L + (1-η)·G.
                   ~1% accuracy in the core; closed-form, no complex arithmetic.
-- `FullFaddeeva`: Exact Faddeeva w(z) via `SpecialFunctions.erfcx`. Machine-precision
-                  reference; CPU-only; ~3–4× slower than Weideman.
 """
 @enum VoigtMethod begin
     Weideman     = 1
@@ -50,6 +51,13 @@ end
 
 const (_W_T, _W_W, _W_C, _W_SCALE) = _weideman_precompute(_W_N)
 
+# Float32 versions for Metal GPU (Apple Silicon does not support Float64)
+const _W_T32     = ntuple(n -> Float32(_W_T[n]), _W_N)
+const _W_W32     = ntuple(n -> Float32(_W_W[n]), _W_N)
+const _W_C32     = ntuple(n -> Float32(_W_C[n]), _W_N)
+const _W_SCALE32 = Float32(_W_SCALE)
+
+
 """
     weideman_voigt(x, y) -> Float64
 
@@ -57,7 +65,12 @@ Weideman (1994) 24-term rational approximation to the Voigt H-function
 H(x,y) = Re[w(x+iy)].  Pure Float64 arithmetic — no complex numbers, no
 region switching.  GPU-compatible; loop unrolled at compile time.
 
-Max relative error ≈ 1.9×10⁻⁴ uniformly for all x and y > 0.
+Uses a two-sum complementary correction to recover the exact Gaussian limit
+as y → 0: A = (y/NL)·ΣCₙ/dₙ and B = (y/NL)·ΣWₙ/dₙ, so
+H = exp(-x²)·(1-B) + A → exp(-x²) as y→0 and → A ≈ H_true for large y.
+
+Max relative error ≈ 1.9×10⁻⁴ for y ≥ ~0.5; recovers Gaussian for y → 0.
+For 0 < y < 0.5, B can exceed 1 near quadrature nodes — clipped to 0 by max().
 
 Reference: Weideman J.A.C. (1994), SIAM J. Sci. Comput. 15(5), 1996–2002.
 """
@@ -73,6 +86,22 @@ Reference: Weideman J.A.C. (1994), SIAM J. Sci. Comput. 15(5), 1996–2002.
     A = acc_A * scale             # standard Weideman sum → 0 as y → 0
     B = acc_B * scale             # approximates Lorentzian integral ≈ 1
     return max(0.0, exp(-x^2) * (1.0 - B) + A)
+end
+
+# Float32 variant — identical algorithm, uses Float32 precomputed constants.
+# Required for Metal GPU (Apple Silicon does not support Float64 in shaders).
+@inline function weideman_voigt(x::Float32, y::Float32)::Float32
+    acc_A = 0.0f0
+    acc_B = 0.0f0
+    @inbounds for n in 1:_W_N
+        d      = (x - _W_T32[n])^2 + y^2
+        acc_A += _W_C32[n] / d
+        acc_B += _W_W32[n] / d
+    end
+    scale = y / _W_SCALE32
+    A = acc_A * scale
+    B = acc_B * scale
+    return max(0.0f0, exp(-x^2) * (1.0f0 - B) + A)
 end
 
 # ── Method 2: Pseudo-Voigt (Thompson et al. 1987) ────────────────────────────
@@ -126,16 +155,16 @@ end
 Evaluate the normalized Voigt profile at wavenumber `ν` (cm⁻¹),
 centered at `ν₀` (cm⁻¹), with Lorentz HWHM `γ_L` and Doppler HWHM `γ_D`.
 
-`method` is a `VoigtMethod` (default `Weideman`):
-- `Weideman`    : ~1e-4 accuracy, GPU-compatible, no region switching. Default.
+`method` is a `VoigtMethod` (default `FullFaddeeva`):
+- `FullFaddeeva`: machine precision via `SpecialFunctions.erfcx`. Default.
+- `Weideman`    : ~1e-4 accuracy, GPU-compatible (Float32 Metal / Float64 CUDA).
 - `PseudoVoigt` : ~1% accuracy, closed-form mixing approximation.
-- `FullFaddeeva`: machine precision via `SpecialFunctions.erfcx`, CPU-only.
 
 Returns profile in units of cm (i.e. ∫V dν = 1 when γ values are in cm⁻¹).
 """
 @inline function voigt_profile(ν::Float64, ν₀::Float64,
                                 γ_L::Float64, γ_D::Float64,
-                                method::VoigtMethod = Weideman)::Float64
+                                method::VoigtMethod = FullFaddeeva)::Float64
     if method == PseudoVoigt
         return pseudo_voigt_profile(ν, ν₀, γ_L, γ_D)
     end
@@ -197,13 +226,13 @@ end
     j_lo = _lower_bound(lines_ν0, ν - cutoff, n_lines)
     j_hi = _upper_bound(lines_ν0, ν + cutoff, n_lines)
 
-    acc = 0.0
+    acc = zero(ν)   # Float32 on Metal, Float64 on CPU
     for j in j_lo:j_hi
         x   = (ν - lines_ν0[j]) * lines_f[j]
         H   = weideman_voigt(x, lines_y[j])
         acc += lines_Snorm[j] * H
     end
-    σ[i] = max(acc, 0.0)
+    σ[i] = max(acc, zero(ν))
 end
 
 # ── CPU threaded path for PseudoVoigt and FullFaddeeva ───────────────────────
@@ -290,14 +319,14 @@ end
 """
     compute_voigt_cross_sections(ν_grid, linelist, T, p_atm;
                                   cutoff=25.0, backend=CPU(),
-                                  method=Weideman) -> Vector{Float64}
+                                  method=FullFaddeeva) -> Vector{Float64}
 
 Compute absorption cross-sections (cm²/molec) on `ν_grid` for all lines
 in `linelist` at temperature T (K) and pressure p_atm (atm).
 
 - `cutoff`:  line wing cut-off (cm⁻¹), default 25 cm⁻¹
 - `backend`: KernelAbstractions backend, default `CPU()`
-- `method`:  `VoigtMethod` enum — `Weideman` (default, GPU-compatible),
+- `method`:  `VoigtMethod` enum — `FullFaddeeva` (default, machine precision),
              `PseudoVoigt`, or `FullFaddeeva` (both CPU-only)
 """
 function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
@@ -306,46 +335,49 @@ function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
                                        p_atm::Float64;
                                        cutoff::Float64 = 25.0,
                                        backend = CPU(),
-                                       method::VoigtMethod = Weideman)
+                                       method::VoigtMethod = FullFaddeeva)
     if method != Weideman
         return _compute_voigt_cpu(ν_grid, linelist, T, p_atm, cutoff, method)
     end
 
+    # Metal (Apple Silicon) does not support Float64 — use Float32 automatically.
+    FT = (backend isa Metal.MetalBackend) ? Float32 : Float64
+
     n_ν = ν_grid.n
     n_L = length(linelist.lines)
 
-    ν0    = Vector{Float64}(undef, n_L)
-    f_arr = Vector{Float64}(undef, n_L)
-    y_arr = Vector{Float64}(undef, n_L)
-    Snorm = Vector{Float64}(undef, n_L)
+    ν0    = Vector{FT}(undef, n_L)
+    f_arr = Vector{FT}(undef, n_L)
+    y_arr = Vector{FT}(undef, n_L)
+    Snorm = Vector{FT}(undef, n_L)
 
     for (j, line) in enumerate(linelist.lines)
-        ν0[j]  = pressure_shift(line, p_atm)
+        ν0[j]  = FT(pressure_shift(line, p_atm))
         S      = temperature_scaled_intensity(line, T)
         gl, gd = pressure_broadened_width(line, p_atm, T)
         gd     = max(gd, 1e-10)
         f      = _SQRT_LN2 / gd
-        f_arr[j] = f
-        y_arr[j] = gl * f
-        Snorm[j] = S * f * _INV_SQRT_PI
+        f_arr[j] = FT(f)
+        y_arr[j] = FT(gl * f)
+        Snorm[j] = FT(S * f * _INV_SQRT_PI)
     end
 
-    σ    = KernelAbstractions.zeros(backend, Float64, n_ν)
-    ν_d  = KernelAbstractions.allocate(backend, Float64, n_ν)
-    copyto!(ν_d, ν_grid.ν)
+    σ    = KernelAbstractions.zeros(backend, FT, n_ν)
+    ν_d  = KernelAbstractions.allocate(backend, FT, n_ν)
+    copyto!(ν_d, FT.(ν_grid.ν))
 
-    ν0_d    = KernelAbstractions.allocate(backend, Float64, n_L)
-    f_d     = KernelAbstractions.allocate(backend, Float64, n_L)
-    y_d     = KernelAbstractions.allocate(backend, Float64, n_L)
-    Snorm_d = KernelAbstractions.allocate(backend, Float64, n_L)
+    ν0_d    = KernelAbstractions.allocate(backend, FT, n_L)
+    f_d     = KernelAbstractions.allocate(backend, FT, n_L)
+    y_d     = KernelAbstractions.allocate(backend, FT, n_L)
+    Snorm_d = KernelAbstractions.allocate(backend, FT, n_L)
     copyto!(ν0_d, ν0)
     copyto!(f_d,  f_arr)
     copyto!(y_d,  y_arr)
     copyto!(Snorm_d, Snorm)
 
     kernel! = voigt_cross_section_kernel!(backend, 256)
-    kernel!(σ, ν_d, ν0_d, f_d, y_d, Snorm_d, cutoff; ndrange=n_ν)
+    kernel!(σ, ν_d, ν0_d, f_d, y_d, Snorm_d, FT(cutoff); ndrange=n_ν)
     KernelAbstractions.synchronize(backend)
 
-    return Array(σ)
+    return Float64.(Array(σ))
 end
