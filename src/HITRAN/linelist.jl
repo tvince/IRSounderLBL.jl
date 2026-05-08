@@ -49,6 +49,7 @@ struct HITRANLinelist
 end
 
 function HITRANLinelist(lines::Vector{HITRANLine})
+    sort!(lines, by = l -> l.wavenumber)   # binary search in Voigt kernel requires sorted order
     mols = Set(Int(l.mol_id) for l in lines)
     νs   = [l.wavenumber for l in lines]
     return HITRANLinelist(lines, mols, minimum(νs), maximum(νs))

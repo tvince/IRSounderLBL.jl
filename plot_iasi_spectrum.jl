@@ -2,6 +2,7 @@ using RadiativeTransfer
 using Plots
 using Printf
 
+t_total = time()
 mkpath("data")
 
 # ── Intensity threshold (cm/molec at 296 K) ───────────────────────────────────
@@ -124,14 +125,19 @@ for (ic, ν_lo) in enumerate(chunk_starts)
     elapsed = round(time() - t0; digits=1)
     print("\r  chunk $ic/$n_chunks  ($(round(Int,ν_hi_c)) cm⁻¹)  $(elapsed)s elapsed   ")
 end
-println("\n  Done in $(round(time()-t0;digits=1)) s")
+t_tau = time() - t0
+@printf("\n  τ cube done in %.1f s\n", t_tau)
 
 # ── Radiative transfer → ILS → IASI channels ─────────────────────────────────
+t_rte = time()
 Tsfc   = prof.temperature[1]
 R_hi   = schwarzschild_rte(ν_hi_full, τ, layers.T_mid, Tsfc)
+@printf("  RTE done in %.2f s\n", time() - t_rte)
 
+t_ils = time()
 ils_δν, ils_kern = ils_kernel(Δν_hi, iasi.opd_max, iasi.fwhm_gauss)
 R_apod = apply_ils(ν_hi_full, R_hi, ils_δν, ils_kern)
+@printf("  ILS done in %.2f s\n", time() - t_ils)
 
 # Linear resample onto IASI 0.25 cm⁻¹ grid
 ν_iasi = iasi_grid(iasi)
@@ -204,3 +210,6 @@ end
 
 savefig(p, "iasi_bt_spectrum.png")
 println("Saved → iasi_bt_spectrum.png")
+
+@printf("\n=== Total wall time: %.1f s  (threads: %d) ===\n",
+        time() - t_total, Threads.nthreads())
