@@ -1,76 +1,47 @@
-"""
-Partition functions via the TIPS-2021 approach.
+# Partition functions from TIPS-2024 v1.2 (Gamache et al. 2025, JQSRT 345, 109568).
+# Q(T) tables are embedded in tips2024_data.jl; linear interpolation at 1 K resolution.
 
-For practical use we implement the polynomial-fit partition functions
-from the HITRAN supplementary material (Gamache et al. 2021, JQSRT).
-The reference temperature is T_ref = 296 K.
+include("tips2024_data.jl")
 
-For each (mol_id, iso_id) pair we store Chebyshev or polynomial coefficients
-covering 1–3000 K.  Here we use a simplified power-law fit
-    Q(T) = Q(296) × (T/296)^α
-with molecule-specific α values, which is accurate to ~1% for T in 150–350 K.
-For production accuracy use the full TIPS tables from HITRAN.
-"""
-
-# Reference temperature (K)
 const T_REF = 296.0
 
-"""
-    Q_approx_exponent
-
-Temperature exponent α such that Q(T) ≈ Q(T_ref) × (T/T_ref)^α.
-Keyed by (mol_id::Int, iso_id::Int).  Covers the most important species.
-"""
-const Q_APPROX_EXPONENT = Dict{Tuple{Int,Int}, Float32}(
-    # H2O
-    (1, 1) => 1.50f0,
-    (1, 2) => 1.50f0,
-    (1, 3) => 1.50f0,
-    # CO2
-    (2, 1) => 1.00f0,
-    (2, 2) => 1.00f0,
-    (2, 3) => 1.00f0,
-    (2, 4) => 1.00f0,
-    # O3
-    (3, 1) => 1.50f0,
-    # N2O
-    (4, 1) => 1.00f0,
-    # CO
-    (5, 1) => 1.00f0,
-    (5, 2) => 1.00f0,
-    # CH4
-    (6, 1) => 1.50f0,
-    (6, 2) => 1.50f0,
-    # O2
-    (7, 1) => 1.00f0,
-    # SO2
-    (9, 1) => 1.50f0,
-    # NH3
-    (11, 1) => 1.50f0,
-)
+# Linear interpolation into a 1K-step TIPS table.
+# The table covers TIPS_T_MIN:TIPS_T_MAX K; clamps silently at boundaries.
+function _tips_lookup(vec::Vector{Float64}, T::Float64)
+    i_lo = floor(Int, T) - TIPS_T_MIN + 1
+    i_hi = i_lo + 1
+    n    = length(vec)
+    i_lo = clamp(i_lo, 1, n)
+    i_hi = clamp(i_hi, 1, n)
+    frac = T - floor(T)
+    return vec[i_lo] * (1.0 - frac) + vec[i_hi] * frac
+end
 
 """
     partition_function(mol_id, iso_id, T) -> Float64
 
-Approximate TIPS-2021 partition function at temperature T (K).
+Total internal partition sum Q(T) from TIPS-2024 tables.
+Falls back to power-law Q ∝ T for unknown isotopologues.
 """
 function partition_function(mol_id::Int, iso_id::Int, T::Float64)
-    key = (mol_id, iso_id)
-    α = Float64(get(Q_APPROX_EXPONENT, key, 1.0f0))
-    return (T / T_REF)^α
+    vec = get(TIPS2024_DATA, (mol_id, iso_id), nothing)
+    isnothing(vec) && return (T / T_REF)
+    return _tips_lookup(vec, T)
 end
 
 """
     Q_ratio(mol_id, iso_id, T) -> Float64
 
-Return Q(T_ref) / Q(T), the ratio used in the temperature-scaled line
-intensity formula of HITRAN:
+Return Q(T_ref) / Q(T), the partition function ratio used in the HITRAN
+temperature-scaled line intensity:
 
     S(T) = S(T_ref) × [Q(T_ref)/Q(T)] × exp[-C2·E″·(1/T − 1/T_ref)]
                      × [1 − exp(-C2·ν₀/T)] / [1 − exp(-C2·ν₀/T_ref)]
 """
 function Q_ratio(mol_id::Int, iso_id::Int, T::Float64)
-    key = (mol_id, iso_id)
-    α = Float64(get(Q_APPROX_EXPONENT, key, 1.0f0))
-    return (T_REF / T)^α
+    vec = get(TIPS2024_DATA, (mol_id, iso_id), nothing)
+    isnothing(vec) && return (T_REF / T)
+    Q_T   = _tips_lookup(vec, T)
+    Q_ref = _tips_lookup(vec, T_REF)
+    return Q_ref / Q_T
 end
