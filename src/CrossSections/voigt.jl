@@ -217,6 +217,7 @@ end
                                               lines_f,
                                               lines_y,
                                               lines_Snorm,
+                                              lines_H_cutoff,
                                               cutoff)
     i = @index(Global, Linear)
     ν       = ν_grid[i]
@@ -229,7 +230,7 @@ end
     acc = zero(ν)   # Float32 on Metal, Float64 on CPU
     for j in j_lo:j_hi
         x   = (ν - lines_ν0[j]) * lines_f[j]
-        H   = weideman_voigt(x, lines_y[j])
+        H   = weideman_voigt(x, lines_y[j]) - lines_H_cutoff[j]
         acc += lines_Snorm[j] * H
     end
     σ[i] = max(acc, zero(ν))
@@ -283,6 +284,15 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
             γV_arr[j] = 0.5 * fV
             η_arr[j]  = 1.36603*r - 0.47719*r^2 + 0.11116*r^3
         end
+        # Precompute cutoff baseline per line (MT-CKD convention: σ=0 at boundary)
+        baseline_arr = Vector{Float64}(undef, n_L)
+        for j in 1:n_L
+            γV = γV_arr[j]
+            η  = η_arr[j]
+            G_c = sqrt(log(2.0) / π) / γV * exp(-log(2.0) * cutoff^2 / γV^2)
+            L_c = γV / (π * (cutoff^2 + γV^2))
+            baseline_arr[j] = S_arr[j] * (η * L_c + (1.0 - η) * G_c)
+        end
         Threads.@threads for i in 1:n_ν
             νi   = ν_grid.ν[i]
             j_lo = _lower_bound(ν0, νi - cutoff, n_L)
@@ -294,11 +304,16 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
                 Δν  = νi - ν0[j]
                 G   = sqrt(log(2.0) / π) / γV * exp(-log(2.0) * Δν^2 / γV^2)
                 L   = γV / (π * (Δν^2 + γV^2))
-                acc += S_arr[j] * (η * L + (1.0 - η) * G)
+                acc += S_arr[j] * (η * L + (1.0 - η) * G) - baseline_arr[j]
             end
             σ[i] = max(acc, 0.0)
         end
     else  # FullFaddeeva
+        # Precompute cutoff baseline per line (MT-CKD convention: σ=0 at boundary)
+        H_cutoff = Vector{Float64}(undef, n_L)
+        for j in 1:n_L
+            H_cutoff[j] = faddeeva_voigt(cutoff * f_arr[j], y_arr[j])
+        end
         Threads.@threads for i in 1:n_ν
             νi   = ν_grid.ν[i]
             j_lo = _lower_bound(ν0, νi - cutoff, n_L)
@@ -306,7 +321,7 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
             acc  = 0.0
             for j in j_lo:j_hi
                 x   = (νi - ν0[j]) * f_arr[j]
-                H   = faddeeva_voigt(x, y_arr[j])
+                H   = faddeeva_voigt(x, y_arr[j]) - H_cutoff[j]
                 acc += Snorm[j] * H
             end
             σ[i] = max(acc, 0.0)
@@ -366,17 +381,24 @@ function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
     ν_d  = KernelAbstractions.allocate(backend, FT, n_ν)
     copyto!(ν_d, FT.(ν_grid.ν))
 
-    ν0_d    = KernelAbstractions.allocate(backend, FT, n_L)
-    f_d     = KernelAbstractions.allocate(backend, FT, n_L)
-    y_d     = KernelAbstractions.allocate(backend, FT, n_L)
-    Snorm_d = KernelAbstractions.allocate(backend, FT, n_L)
-    copyto!(ν0_d, ν0)
-    copyto!(f_d,  f_arr)
-    copyto!(y_d,  y_arr)
-    copyto!(Snorm_d, Snorm)
+    H_cutoff = Vector{FT}(undef, n_L)
+    for j in 1:n_L
+        H_cutoff[j] = FT(weideman_voigt(FT(cutoff) * f_arr[j], y_arr[j]))
+    end
+
+    ν0_d       = KernelAbstractions.allocate(backend, FT, n_L)
+    f_d        = KernelAbstractions.allocate(backend, FT, n_L)
+    y_d        = KernelAbstractions.allocate(backend, FT, n_L)
+    Snorm_d    = KernelAbstractions.allocate(backend, FT, n_L)
+    H_cutoff_d = KernelAbstractions.allocate(backend, FT, n_L)
+    copyto!(ν0_d,       ν0)
+    copyto!(f_d,        f_arr)
+    copyto!(y_d,        y_arr)
+    copyto!(Snorm_d,    Snorm)
+    copyto!(H_cutoff_d, H_cutoff)
 
     kernel! = voigt_cross_section_kernel!(backend, 256)
-    kernel!(σ, ν_d, ν0_d, f_d, y_d, Snorm_d, FT(cutoff); ndrange=n_ν)
+    kernel!(σ, ν_d, ν0_d, f_d, y_d, Snorm_d, H_cutoff_d, FT(cutoff); ndrange=n_ν)
     KernelAbstractions.synchronize(backend)
 
     return Float64.(Array(σ))
