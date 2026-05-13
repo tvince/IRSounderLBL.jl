@@ -9,27 +9,44 @@ References:
 # C2 = hc/k in cm·K (defined again locally to avoid circular dependency)
 const _C2 = 1.4387752  # cm·K
 
+# Species-average self-broadening temperature exponents (n_self) and self pressure
+# shifts (δ_self), used when per-line values are unavailable in HITRAN 2020.
+# H2O: Birk et al. (2021), mean over 620–2785 cm⁻¹ transitions.
+# CO2: HITRAN supplemental mean; n_self ≈ n_air so correction is minor.
+# All other species: VMR too small for self-broadening to matter; fall back to n_air.
+const _N_SELF = Dict{Int,Float64}(
+    1 => 0.95,   # H2O
+    2 => 0.75,   # CO2
+)
+const _DELTA_SELF = Dict{Int,Float64}(
+    1 =>  0.002,  # H2O  (cm⁻¹/atm)
+    2 => -0.003,  # CO2  (cm⁻¹/atm)
+)
+
 """
-    pressure_broadened_width(line, p, T) -> (γ_L, γ_D)
+    pressure_broadened_width(line, p, T; vmr_self) -> (γ_L, γ_D)
 
 Compute the Lorentzian (pressure) half-width γ_L and the Doppler half-width
 γ_D (both HWHM, in cm⁻¹) for a given `HITRANLine` at pressure p (atm)
 and temperature T (K).
 
-Lorentzian half-width (air-broadened, self-broadening ignored here):
-    γ_L(T, p) = (T_ref/T)^n × (γ_air × p)
+Air and self terms are scaled with their own temperature exponents:
+    γ_L = (T_ref/T)^n_air  × γ_air  × (1 − vmr_self) × p
+        + (T_ref/T)^n_self × γ_self × vmr_self        × p
 
-Gaussian (Doppler) half-width:
-    γ_D = ν₀/c × sqrt(2 ln2 × k T / M)
-        = ν₀ × 3.5812e-7 × sqrt(T / M_amu)
-
-where M_amu is the molecular mass in atomic mass units.
+n_self is taken from `_N_SELF` (species-average literature values) when available,
+falling back to n_air for unlisted species.
 """
-function pressure_broadened_width(line::HITRANLine, p_atm::Float64, T::Float64)
-    γ_L = (T_REF / T)^line.temp_depend * line.air_broad * p_atm
+function pressure_broadened_width(line::HITRANLine, p_atm::Float64, T::Float64;
+                                   vmr_self::Float64 = 0.0)
+    mol = Int(line.mol_id)
+    n_air_  = Float64(line.temp_depend)
+    n_self_ = get(_N_SELF, mol, n_air_)
+    t_ratio = T_REF / T
+    γ_L = t_ratio^n_air_  * line.air_broad  * (1.0 - vmr_self) * p_atm +
+          t_ratio^n_self_ * line.self_broad * vmr_self          * p_atm
 
-    # Molecular mass in amu (approximate, for Doppler width)
-    M = _molecular_mass_amu(Int(line.mol_id))
+    M = _molecular_mass_amu(mol)
     γ_D = line.wavenumber * 3.58126e-7 * sqrt(T / M)
 
     return Float64(γ_L), Float64(γ_D)
@@ -77,10 +94,13 @@ function _molecular_mass_amu(mol_id::Int)
 end
 
 """
-    pressure_shift(line, p_atm) -> Float64
+    pressure_shift(line, p_atm; vmr_self) -> Float64
 
-Apply HITRAN pressure shift to line center wavenumber:
-    ν_shifted = ν₀ + δ × p
+Apply pressure shift to line center wavenumber, mixing air and self contributions:
+    ν_shifted = ν₀ + (δ_air × (1 − vmr_self) + δ_self × vmr_self) × p
 """
-pressure_shift(line::HITRANLine, p_atm::Float64) =
-    line.wavenumber + Float64(line.pressure_shift) * p_atm
+function pressure_shift(line::HITRANLine, p_atm::Float64; vmr_self::Float64 = 0.0)
+    δ_self = get(_DELTA_SELF, Int(line.mol_id), 0.0)
+    return line.wavenumber +
+           (Float64(line.pressure_shift) * (1.0 - vmr_self) + δ_self * vmr_self) * p_atm
+end

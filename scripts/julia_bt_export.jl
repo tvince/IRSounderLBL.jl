@@ -15,8 +15,9 @@ const NU_MIN    = 645.0
 const NU_MAX    = 2760.0
 const DNU_OUT   = 0.25
 const CUTOFF    = 25.0
-const HRF       = 2           # oversampling vs 0.25 cm⁻¹ output; use 50 when APPLY_ILS=true
-const APPLY_ILS = false       # set true to convolve with IASI ILS before resampling
+const HRF             = 2           # oversampling vs 0.25 cm⁻¹ output; use 50 when APPLY_ILS=true
+const APPLY_ILS       = false       # set true to convolve with IASI ILS before resampling
+const APPLY_CONTINUUM = false       # set true to add H2O + CO2 MT-CKD continuum
 const N_AIR     = 2.1209e22   # molec/(cm²·hPa)
 
 t0 = time()
@@ -73,14 +74,17 @@ for k in 1:n_lev
     for (sp, ll) in linelists
         vmr = haskey(layers.vmr_mid, sp) ? layers.vmr_mid[sp][k] : 0.0
         vmr == 0.0 && continue
-        σ = compute_voigt_cross_sections(ν_grid, ll, T_k, p_atm; cutoff=CUTOFF)
+        vmr_s = (sp == H2O) ? vmr : 0.0
+        σ = compute_voigt_cross_sections(ν_grid, ll, T_k, p_atm; cutoff=CUTOFF, vmr_self=vmr_s)
         τ[:, k] .+= σ .* (vmr * Δp_k * N_AIR)
     end
 
-    vmr_h2o = layers.vmr_mid[H2O][k]
-    vmr_co2 = layers.vmr_mid[CO2][k]
-    τ[:, k] .+= h2o_continuum(ν_grid, vmr_h2o, layers.p_mid[k], T_k) .* dz
-    τ[:, k] .+= co2_continuum(ν_grid, vmr_co2, layers.p_mid[k], T_k) .* dz
+    if APPLY_CONTINUUM
+        vmr_h2o = layers.vmr_mid[H2O][k]
+        vmr_co2 = layers.vmr_mid[CO2][k]
+        τ[:, k] .+= h2o_continuum(ν_grid, vmr_h2o, layers.p_mid[k], T_k) .* dz
+        τ[:, k] .+= co2_continuum(ν_grid, vmr_co2, layers.p_mid[k], T_k) .* dz
+    end
 end
 @printf("  τ done in %.1f s\n", time() - t1)
 

@@ -78,12 +78,14 @@ ws.stokes_dim    = 1
 ws.atmosphere_dim = 1
 ws.f_grid        = wn2hz(nu_hi)
 
-# Species — H2O includes MT-CKD 3.50 self + foreign continuum (matches Julia's continuum fit)
-SPECIES      = ["H2O", "CO2", "O3", "N2O", "CH4", "CO"]   # for VMR indexing
-SPECIES_ARTS = [
-    "H2O, H2O-SelfContCKDMT350, H2O-ForeignContCKDMT350",
-    "CO2", "O3", "N2O", "CH4", "CO",
-]
+# Species — pure LBL, no continuum (set True to add MT-CKD 3.50 H2O continuum)
+APPLY_CONTINUUM = False
+SPECIES         = ["H2O", "CO2", "O3", "N2O", "CH4", "CO"]   # for VMR indexing
+SPECIES_ARTS    = (
+    ["H2O, H2O-SelfContCKDMT350, H2O-ForeignContCKDMT350", "CO2", "O3", "N2O", "CH4", "CO"]
+    if APPLY_CONTINUUM else
+    ["H2O", "CO2", "O3", "N2O", "CH4", "CO"]
+)
 ws.abs_speciesSet(species=SPECIES_ARTS)
 
 # ── Read HITRAN files and accumulate abs_lines ────────────────────────────────

@@ -242,6 +242,7 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
                              linelist::HITRANLinelist,
                              T::Float64,
                              p_atm::Float64,
+                             vmr_self::Float64,
                              cutoff::Float64,
                              method::VoigtMethod)
     n_ν = ν_grid.n
@@ -256,9 +257,9 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
     Snorm  = Vector{Float64}(undef, n_L)
 
     for (j, line) in enumerate(linelist.lines)
-        ν0[j]     = pressure_shift(line, p_atm)
+        ν0[j]     = pressure_shift(line, p_atm; vmr_self=vmr_self)
         S         = temperature_scaled_intensity(line, T)
-        gl, gd    = pressure_broadened_width(line, p_atm, T)
+        gl, gd    = pressure_broadened_width(line, p_atm, T; vmr_self=vmr_self)
         gd        = max(gd, 1e-10)
         f         = _SQRT_LN2 / gd
         S_arr[j]  = S
@@ -348,11 +349,12 @@ function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
                                        linelist::HITRANLinelist,
                                        T::Float64,
                                        p_atm::Float64;
+                                       vmr_self::Float64 = 0.0,
                                        cutoff::Float64 = 25.0,
                                        backend = CPU(),
                                        method::VoigtMethod = FullFaddeeva)
     if method != Weideman
-        return _compute_voigt_cpu(ν_grid, linelist, T, p_atm, cutoff, method)
+        return _compute_voigt_cpu(ν_grid, linelist, T, p_atm, vmr_self, cutoff, method)
     end
 
     # Metal (Apple Silicon) does not support Float64 — use Float32 automatically.
@@ -369,7 +371,7 @@ function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
     for (j, line) in enumerate(linelist.lines)
         ν0[j]  = FT(pressure_shift(line, p_atm))
         S      = temperature_scaled_intensity(line, T)
-        gl, gd = pressure_broadened_width(line, p_atm, T)
+        gl, gd = pressure_broadened_width(line, p_atm, T; vmr_self=vmr_self)
         gd     = max(gd, 1e-10)
         f      = _SQRT_LN2 / gd
         f_arr[j] = FT(f)

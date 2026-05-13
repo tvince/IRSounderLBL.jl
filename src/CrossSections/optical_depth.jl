@@ -90,9 +90,10 @@ function layer_optical_depth(ν_grid::WavenumberGrid,
         vmr == 0.0 && continue
 
         # Compute line-by-line OD for this species
+        vmr_s = (sp == H2O) ? vmr : 0.0
         σ_sp = compute_voigt_cross_sections(ν_grid, ll, T,
                                              p_hPa / 1013.25;
-                                             kwargs...)
+                                             vmr_self=vmr_s, kwargs...)
         Nair_per_vmr = 2.1209e22
         N_col = vmr * Δp_hPa * Nair_per_vmr
         τ .+= σ_sp .* N_col
