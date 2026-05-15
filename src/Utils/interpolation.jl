@@ -24,19 +24,16 @@ end
 """
     interp_vmr(p_ref, vmr_ref, p_target)
 
-Interpolate a VMR profile in log(VMR)–log(p) space to better preserve
-the orders-of-magnitude variation typical of trace gas profiles.
+Interpolate a VMR profile linearly in log(p) space.
+
+Uses the same scheme as `interp_profile` (linear VMR in log-p), which is
+consistent with ARTS's trapezoidal integration at pressure-level boundaries.
+Log-VMR interpolation was previously used here but systematically
+underestimates H2O column amounts by 1–8% in layers where H2O drops rapidly,
+causing a +0.4 K warm bias in the H2O 6 µm band compared to ARTS.
 """
 function interp_vmr(p_ref::AbstractVector{<:Real},
                     vmr_ref::AbstractVector{<:Real},
                     p_target::AbstractVector{<:Real})
-    logp_ref = log.(p_ref)
-    logvmr   = log.(max.(vmr_ref, 1e-20))
-    if !issorted(logp_ref)
-        idx      = sortperm(logp_ref)
-        logp_ref = logp_ref[idx]
-        logvmr   = logvmr[idx]
-    end
-    itp = linear_interpolation(logp_ref, logvmr; extrapolation_bc=Flat())
-    return exp.(itp.(log.(p_target)))
+    return interp_profile(p_ref, vmr_ref, p_target)
 end
