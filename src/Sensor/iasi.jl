@@ -104,30 +104,26 @@ function iasi_forward_model(prof::AtmosphericProfile,
     n_ν_hi   = ν_grid_hi.n
 
     # ── 3. Build optical depth cube ──────────────────────────────────────
-    τ_layers = zeros(Float64, n_ν_hi, n_layers)
+    τ_layers  = zeros(Float64, n_ν_hi, n_layers)
+    Nair_per_vmr = 2.1209e22   # molec/(cm²·hPa)
     for k in 1:n_layers
-        vmr_k = Dict{GasSpecies, Float64}(
-            sp => layers.vmr_mid[sp][k] for sp in keys(layers.vmr_mid)
-        )
-        vmr_h2o = get(vmr_k, H2O, 0.0)
-        vmr_co2 = get(vmr_k, CO2, 4.15e-4)
-
-        # Line-by-line contribution per species
+        # Line-by-line: use Curtis-Godson effective VMR, pressure, and temperature
         for (sp, ll) in linelists
-            vmr = get(vmr_k, sp, 0.0)
+            vmr = haskey(layers.vmr_cg, sp) ? layers.vmr_cg[sp][k] : 0.0
             vmr == 0.0 && continue
-            σ_sp = compute_voigt_cross_sections(ν_grid_hi, ll,
-                                                 layers.T_mid[k],
-                                                 layers.p_mid[k] / 1013.25;
-                                                 cutoff=cutoff,
-                                                 backend=backend)
-            Nair_per_vmr = 2.1209e22
-            N_col = vmr * layers.Δp[k] * Nair_per_vmr
-            τ_layers[:, k] .+= σ_sp .* N_col
+            p_cg_atm = layers.p_cg[sp][k] / 1013.25
+            T_cg_sp  = layers.T_cg[sp][k]
+            vmr_self = (sp == H2O) ? vmr : 0.0
+            σ_sp = compute_voigt_cross_sections(ν_grid_hi, ll, T_cg_sp, p_cg_atm;
+                                                 vmr_self=vmr_self,
+                                                 cutoff=cutoff, backend=backend)
+            τ_layers[:, k] .+= σ_sp .* (vmr * layers.Δp[k] * Nair_per_vmr)
         end
 
-        # Add continua
-        dz_cm = _dp_to_dz_cm(layers.Δp[k], layers.p_mid[k], layers.T_mid[k])
+        # Continua: use arithmetic mid-layer conditions (smooth, no CG needed)
+        vmr_h2o = haskey(layers.vmr_mid, H2O) ? layers.vmr_mid[H2O][k] : 0.0
+        vmr_co2 = haskey(layers.vmr_mid, CO2) ? layers.vmr_mid[CO2][k] : 4.15e-4
+        dz_cm   = _dp_to_dz_cm(layers.Δp[k], layers.p_mid[k], layers.T_mid[k])
         τ_layers[:, k] .+= h2o_continuum(ν_grid_hi, vmr_h2o, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
         τ_layers[:, k] .+= co2_continuum(ν_grid_hi, vmr_co2, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
     end

@@ -66,22 +66,24 @@ println("Building τ cube...")
 τ = zeros(Float64, n_ν, n_lev)
 t1 = time()
 for k in 1:n_lev
-    p_atm = layers.p_mid[k] / 1013.25
-    T_k   = layers.T_mid[k]
-    Δp_k  = layers.Δp[k]
-    dz    = _dz(Δp_k, layers.p_mid[k], T_k)
+    Δp_k = layers.Δp[k]
+    T_k  = layers.T_mid[k]   # mid-layer T for Planck source function
 
+    # Line-by-line: Curtis-Godson effective VMR, pressure, and temperature
     for (sp, ll) in linelists
-        vmr = haskey(layers.vmr_mid, sp) ? layers.vmr_mid[sp][k] : 0.0
+        vmr = haskey(layers.vmr_cg, sp) ? layers.vmr_cg[sp][k] : 0.0
         vmr == 0.0 && continue
+        p_atm = layers.p_cg[sp][k] / 1013.25
+        T_sp  = layers.T_cg[sp][k]
         vmr_s = (sp == H2O) ? vmr : 0.0
-        σ = compute_voigt_cross_sections(ν_grid, ll, T_k, p_atm; cutoff=CUTOFF, vmr_self=vmr_s)
+        σ = compute_voigt_cross_sections(ν_grid, ll, T_sp, p_atm; cutoff=CUTOFF, vmr_self=vmr_s)
         τ[:, k] .+= σ .* (vmr * Δp_k * N_AIR)
     end
 
     if APPLY_CONTINUUM
         vmr_h2o = layers.vmr_mid[H2O][k]
         vmr_co2 = layers.vmr_mid[CO2][k]
+        dz = _dz(Δp_k, layers.p_mid[k], T_k)
         τ[:, k] .+= h2o_continuum(ν_grid, vmr_h2o, layers.p_mid[k], T_k) .* dz
         τ[:, k] .+= co2_continuum(ν_grid, vmr_co2, layers.p_mid[k], T_k) .* dz
     end
