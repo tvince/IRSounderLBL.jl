@@ -175,6 +175,7 @@ ws.iy_space_agendaSet(option="CosmicBackground")
 # ── Geometry / sensor ─────────────────────────────────────────────────────────
 ws.water_p_eq_agendaSet()   # needed by iyEmissionStandard for refraction/humidity
 ws.iy_main_agendaSet(option="Emission")
+ws.rt_integration_option = "second order"   # match Julia's linear-in-τ source function
 ws.ppath_agendaSet(option="FollowSensorLosPath")
 ws.ppath_step_agendaSet(option="GeometricPath")
 ws.ppath_lmax      = -1

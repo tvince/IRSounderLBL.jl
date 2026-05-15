@@ -130,7 +130,7 @@ function iasi_forward_model(prof::AtmosphericProfile,
 
     # ── 4. Radiative transfer ────────────────────────────────────────────
     Tsfc = isnothing(T_sfc) ? prof.temperature[1] : T_sfc
-    R_hi = schwarzschild_rte(ν_grid_hi, τ_layers, layers.T_mid, Tsfc;
+    R_hi = schwarzschild_rte(ν_grid_hi, τ_layers, prof.temperature, Tsfc;
                              μ=geom.μ, ε_sfc=ε_sfc)
 
     # ── 5. Apply IASI ILS (Norton-Beer apodization) ──────────────────────

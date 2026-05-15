@@ -92,7 +92,7 @@ end
 
 # ── RTE → (ILS →) BT ─────────────────────────────────────────────────────────
 Tsfc = prof.temperature[1]
-R_hi = schwarzschild_rte(ν_grid, τ, layers.T_mid, Tsfc)
+R_hi = schwarzschild_rte(ν_grid, τ, prof.temperature, Tsfc)
 if APPLY_ILS
     ils_δν, ils_k = ils_kernel(Δν_hi, 2.0, 0.5)   # IASI: opd_max=2 cm, fwhm=0.5 cm⁻¹
     R_hi = apply_ils(ν_grid, R_hi, ils_δν, ils_k)

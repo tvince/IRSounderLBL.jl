@@ -158,26 +158,27 @@ using RadiativeTransfer
     @testset "Schwarzschild RTE" begin
         g      = wavenumber_grid(645.0, 2760.0, 0.25)
         n_lay  = 5
-        T_lay  = fill(280.0, n_lay)
+        # T_lev has n_lay+1 level-boundary temperatures (surface-first)
+        T_lev  = fill(280.0, n_lay + 1)
         T_sfc  = 300.0
-        B_sfc = planck_radiance.(g.ν, T_sfc)
+        B_sfc  = planck_radiance.(g.ν, T_sfc)
 
-        # Optically thick: surface blocked, TOA emission ≈ B(T_lay) from top layer
+        # Optically thick: surface blocked, TOA emission ≈ B(T_top) from top layer
         τ_thick = fill(100.0, g.n, n_lay)
-        I_thick = schwarzschild_rte(g, τ_thick, T_lay, T_sfc)
-        B_atm   = planck_radiance.(g.ν, T_lay[end])
+        I_thick = schwarzschild_rte(g, τ_thick, T_lev, T_sfc)
+        B_atm   = planck_radiance.(g.ν, T_lev[end])
         @test all(isapprox.(I_thick, B_atm; rtol=1e-3))
 
         # Optically thin limit: τ → 0 → I ≈ B(T_sfc) (surface visible)
         τ_thin = fill(1e-10, g.n, n_lay)
-        I_thin = schwarzschild_rte(g, τ_thin, T_lay, T_sfc)
+        I_thin = schwarzschild_rte(g, τ_thin, T_lev, T_sfc)
         @test all(isapprox.(I_thin, B_sfc; rtol=1e-4))
 
         # Isothermal atmosphere at T: I ≈ B(T) regardless of τ (Kirchhoff)
         T_iso  = 280.0
-        T_lay2 = fill(T_iso, n_lay)
+        T_lev2 = fill(T_iso, n_lay + 1)
         τ_any  = fill(2.0, g.n, n_lay)
-        I_iso  = schwarzschild_rte(g, τ_any, T_lay2, T_iso)
+        I_iso  = schwarzschild_rte(g, τ_any, T_lev2, T_iso)
         B_iso  = planck_radiance.(g.ν, T_iso)
         @test all(isapprox.(I_iso, B_iso; rtol=1e-6))
     end
