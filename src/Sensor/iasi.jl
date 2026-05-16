@@ -65,20 +65,24 @@ end
                        ε_sfc=1.0,
                        high_res_factor=4,
                        cutoff=25.0,
+                       apply_continuum=true,
+                       apply_ils=true,
                        backend=CPU()) -> (ν_iasi, R_iasi, BT_iasi)
 
 Full IASI forward model: atmosphere → level optical depths → RTE → ILS → IASI L1C.
 
 # Arguments
-- `prof`:           `AtmosphericProfile` for the column
-- `linelists`:      `Dict{GasSpecies, HITRANLinelist}` for all species
-- `iasi`:           `IASIInstrument` specification
-- `geom`:           `ViewingGeometry`
-- `T_sfc`:          surface skin temperature (K); defaults to profile[1]
-- `ε_sfc`:          surface emissivity
-- `high_res_factor`:internal spectral over-sampling relative to IASI Δν
-- `cutoff`:         Voigt wing cutoff (cm⁻¹)
-- `backend`:        compute backend
+- `prof`:             `AtmosphericProfile` for the column
+- `linelists`:        `Dict{GasSpecies, HITRANLinelist}` for all species
+- `iasi`:             `IASIInstrument` specification
+- `geom`:             `ViewingGeometry`
+- `T_sfc`:            surface skin temperature (K); defaults to profile[1]
+- `ε_sfc`:            surface emissivity
+- `high_res_factor`:  internal spectral over-sampling relative to IASI Δν
+- `cutoff`:           Voigt wing cutoff (cm⁻¹)
+- `apply_continuum`:  include MT-CKD H₂O and CO₂ continua (default true)
+- `apply_ils`:        convolve with IASI Norton-Beer ILS before resampling (default true)
+- `backend`:          compute backend
 
 # Returns
 `(ν_iasi, R_iasi, BT_iasi)` — IASI channel wavenumbers, spectral radiance
@@ -92,6 +96,8 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              ε_sfc::Float64           = 1.0,
                              high_res_factor::Int     = 4,
                              cutoff::Float64          = 25.0,
+                             apply_continuum::Bool    = true,
+                             apply_ils::Bool          = true,
                              backend                  = CPU())
 
     # ── 1. High-resolution internal grid ────────────────────────────────
@@ -104,44 +110,33 @@ function iasi_forward_model(prof::AtmosphericProfile,
     n_ν_hi   = ν_grid_hi.n
 
     # ── 3. Build optical depth cube ──────────────────────────────────────
-    τ_layers     = zeros(Float64, n_ν_hi, n_layers)
-    n_levels     = n_layers + 1
+    τ_layers  = zeros(Float64, n_ν_hi, n_layers)
     Nair_per_vmr = 2.1209e22   # molec/(cm²·hPa)
 
-    # LBL: trapezoidal α integration — evaluate σ at each level boundary and
-    # share between adjacent layers (N_levels evaluations vs N_layers previously).
-    # τ_k = ½ (σ_bot × VMR_bot + σ_top × VMR_top) × Δp × Nair
-    for (sp, ll) in linelists
-        vmr_lev = get(prof.vmr, sp, nothing)
-        isnothing(vmr_lev) && continue
-
-        σ_lev = Matrix{Float64}(undef, n_ν_hi, n_levels)
-        for lev in 1:n_levels
-            p_atm    = prof.pressure[lev] / 1013.25
-            T_lev    = Float64(prof.temperature[lev])
-            vmr_self = (sp == H2O) ? Float64(vmr_lev[lev]) : 0.0
-            σ_lev[:, lev] = compute_voigt_cross_sections(ν_grid_hi, ll, T_lev, p_atm;
-                                                          vmr_self=vmr_self,
-                                                          cutoff=cutoff, backend=backend)
-        end
-
-        for k in 1:n_layers
-            vmr_bot = Float64(vmr_lev[k])
-            vmr_top = Float64(vmr_lev[k + 1])
-            c = 0.5 * layers.Δp[k] * Nair_per_vmr
-            @inbounds @simd for i in 1:n_ν_hi
-                τ_layers[i, k] += c * (σ_lev[i, k] * vmr_bot + σ_lev[i, k + 1] * vmr_top)
-            end
+    # LBL: Curtis-Godson effective VMR, pressure, and temperature per layer
+    for k in 1:n_layers
+        for (sp, ll) in linelists
+            vmr = haskey(layers.vmr_cg, sp) ? layers.vmr_cg[sp][k] : 0.0
+            vmr == 0.0 && continue
+            p_cg_atm = layers.p_cg[sp][k] / 1013.25
+            T_cg_sp  = layers.T_cg[sp][k]
+            vmr_self = (sp == H2O) ? vmr : 0.0
+            σ_sp = compute_voigt_cross_sections(ν_grid_hi, ll, T_cg_sp, p_cg_atm;
+                                                 vmr_self=vmr_self,
+                                                 cutoff=cutoff, backend=backend)
+            τ_layers[:, k] .+= σ_sp .* (vmr * layers.Δp[k] * Nair_per_vmr)
         end
     end
 
     # Continua: mid-layer conditions (smooth — trapezoidal correction negligible)
-    for k in 1:n_layers
-        vmr_h2o = haskey(layers.vmr_mid, H2O) ? layers.vmr_mid[H2O][k] : 0.0
-        vmr_co2 = haskey(layers.vmr_mid, CO2) ? layers.vmr_mid[CO2][k] : 4.15e-4
-        dz_cm   = _dp_to_dz_cm(layers.Δp[k], layers.p_mid[k], layers.T_mid[k])
-        τ_layers[:, k] .+= h2o_continuum(ν_grid_hi, vmr_h2o, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
-        τ_layers[:, k] .+= co2_continuum(ν_grid_hi, vmr_co2, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
+    if apply_continuum
+        for k in 1:n_layers
+            vmr_h2o = haskey(layers.vmr_mid, H2O) ? layers.vmr_mid[H2O][k] : 0.0
+            vmr_co2 = haskey(layers.vmr_mid, CO2) ? layers.vmr_mid[CO2][k] : 4.15e-4
+            dz_cm   = _dp_to_dz_cm(layers.Δp[k], layers.p_mid[k], layers.T_mid[k])
+            τ_layers[:, k] .+= h2o_continuum(ν_grid_hi, vmr_h2o, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
+            τ_layers[:, k] .+= co2_continuum(ν_grid_hi, vmr_co2, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
+        end
     end
 
     # ── 4. Radiative transfer ────────────────────────────────────────────
@@ -150,8 +145,12 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              μ=geom.μ, ε_sfc=ε_sfc)
 
     # ── 5. Apply IASI ILS (Norton-Beer apodization) ──────────────────────
-    ils_δν, ils_kern = ils_kernel(Δν_hi, iasi.opd_max, iasi.fwhm_gauss)
-    R_apod = apply_ils(ν_grid_hi, R_hi, ils_δν, ils_kern)
+    if apply_ils
+        ils_δν, ils_kern = ils_kernel(Δν_hi, iasi.opd_max, iasi.fwhm_gauss)
+        R_apod = apply_ils(ν_grid_hi, R_hi, ils_δν, ils_kern)
+    else
+        R_apod = R_hi
+    end
 
     # ── 6. Resample to IASI channels ────────────────────────────────────
     ν_iasi = wavenumber_grid(iasi.ν_min, iasi.ν_max, iasi.Δν)
