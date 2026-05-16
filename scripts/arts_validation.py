@@ -37,16 +37,17 @@ nu_hi   = np.arange(NU_MIN, NU_MAX + DNU_HI * 0.5, DNU_HI)
 nu_iasi = np.arange(NU_MIN, NU_MAX + DNU_OUT * 0.5, DNU_OUT)
 
 # ── Load atmosphere ───────────────────────────────────────────────────────────
-print("Loading US Standard atmosphere...")
-p_hPa, T_K = [], []
+print("Loading AFGL US Standard atmosphere (50 levels, 0-120 km)...")
+p_hPa, T_K, z_km = [], [], []
 vmrs = {sp: [] for sp in ["H2O", "CO2", "O3", "N2O", "CH4", "CO"]}
 keys = ["vmr_H2O", "vmr_CO2", "vmr_O3", "vmr_N2O", "vmr_CH4", "vmr_CO"]
 sps  = ["H2O",    "CO2",    "O3",    "N2O",    "CH4",    "CO"]
 
-with open(os.path.join(DATA_DIR, "us_standard_atm.csv")) as f:
+with open(os.path.join(DATA_DIR, "afgl_us_standard_50lev.csv")) as f:
     for row in csv.DictReader(f):
         p_hPa.append(float(row["p_hPa"]))
         T_K.append(float(row["T_K"]))
+        z_km.append(float(row["z_km"]))
         for k, sp in zip(keys, sps):
             vmrs[sp].append(float(row[k]))
 
@@ -54,20 +55,13 @@ with open(os.path.join(DATA_DIR, "us_standard_atm.csv")) as f:
 # Our CSV is already surface-first, so no reversal needed.
 p_Pa = np.array(p_hPa) * 100.0   # hPa -> Pa
 T    = np.array(T_K)
+z    = np.array(z_km) * 1000.0   # km -> m (ARTS uses metres)
 for sp in sps:
     vmrs[sp] = np.array(vmrs[sp])
 
 n_lev = len(p_Pa)
 T_sfc = T[0]    # surface = index 0
-print(f"  {n_lev} levels, T_sfc = {T_sfc:.2f} K")
-
-# Altitude via hypsometric formula, surface z=0, building upward
-# z[i-1] = z[i] + (R*T_avg/g) * ln(p[i]/p[i-1])   (p[i] < p[i-1])
-R_air, g = 287.058, 9.80665
-z = np.zeros(n_lev)
-for i in range(1, n_lev):
-    T_avg = 0.5 * (T[i - 1] + T[i])
-    z[i]  = z[i - 1] + (R_air * T_avg / g) * np.log(p_Pa[i - 1] / p_Pa[i])
+print(f"  {n_lev} levels, T_sfc = {T_sfc:.2f} K, z_top = {z_km[-1]:.0f} km")
 
 # ── ARTS workspace ────────────────────────────────────────────────────────────
 print("\nInitializing ARTS workspace...")

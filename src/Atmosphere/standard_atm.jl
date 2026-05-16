@@ -1,9 +1,10 @@
 """
 Standard atmosphere profiles: US Standard (1976), Tropical, and Subarctic Summer.
 
-Pressure levels are the 43 standard AFGL levels (hPa).
-Temperature and VMR data are taken from AFGL Atmospheric Constituent Profiles
-(Anderson et al. 1986).
+The 43-level profiles use pressure levels from the original AFGL tabulation.
+The 50-level profile (afgl_us_standard_50lev) extends to 120 km by reading
+data/afgl_us_standard_50lev.csv, which was generated from the ARTS XML data
+repository (Anderson et al. 1986, AFGL-TR-86-0110).
 """
 
 # AFGL 43-level standard pressure grid (hPa), surface to TOA
@@ -198,4 +199,51 @@ function subarctic_atmosphere()
         copy(AFGL_ALTITUDE),
         vmr
     )
+end
+
+# ── AFGL US Standard 50-level (0–120 km) ────────────────────────────────────
+
+"""
+    afgl_us_standard_50lev(; data_dir="data")
+
+Return the AFGL US Standard Atmosphere on 50 pressure levels (0–120 km) read
+from `data/afgl_us_standard_50lev.csv`. Extends the standard 43-level profile
+into the mesosphere and lower thermosphere, which is required for correct
+radiative transfer in optically thick bands such as CO₂ 4.3 µm.
+
+Data source: ARTS XML data repository (Anderson et al. 1986, AFGL-TR-86-0110).
+Generate the CSV with scripts/build_afgl_50lev.py.
+"""
+function afgl_us_standard_50lev(; data_dir::String = "data")
+    path = joinpath(data_dir, "afgl_us_standard_50lev.csv")
+    isfile(path) || error("Profile CSV not found: $path\n" *
+                          "Run scripts/build_afgl_50lev.py to generate it.")
+
+    p   = Float64[]
+    T   = Float64[]
+    z   = Float64[]
+    h2o = Float64[]; co2 = Float64[]; o3 = Float64[]
+    n2o = Float64[]; ch4 = Float64[]; co = Float64[]
+
+    open(path) do f
+        header = readline(f)   # skip header
+        for line in eachline(f)
+            cols = split(line, ',')
+            push!(p,   parse(Float64, cols[1]))
+            push!(T,   parse(Float64, cols[2]))
+            push!(z,   parse(Float64, cols[3]))
+            push!(h2o, parse(Float64, cols[4]))
+            push!(co2, parse(Float64, cols[5]))
+            push!(o3,  parse(Float64, cols[6]))
+            push!(n2o, parse(Float64, cols[7]))
+            push!(ch4, parse(Float64, cols[8]))
+            push!(co,  parse(Float64, cols[9]))
+        end
+    end
+
+    vmr = Dict{GasSpecies, Vector{Float64}}(
+        H2O => h2o, CO2 => co2, O3 => o3,
+        N2O => n2o, CH4 => ch4, CO => co,
+    )
+    return AtmosphericProfile(p, T, z, vmr)
 end

@@ -42,7 +42,8 @@ export GasSpecies, HITRAN_MOLECULE_ID, SPECIES_NAME
 export H2O, CO2, O3, N2O, CO, CH4, O2, SO2, NH3
 export AtmosphericProfile, n_levels, species
 export pressure_layers, layer_properties
-export us_standard_atmosphere, tropical_atmosphere, subarctic_atmosphere
+export us_standard_atmosphere, tropical_atmosphere, subarctic_atmosphere,
+       afgl_us_standard_50lev
 
 # HITRAN exports
 export HITRANLine, HITRANLinelist, filter_linelist

@@ -49,7 +49,7 @@ for (sp, ll) in sort(collect(linelists), by=x->string(x[1]))
 end
 
 # ── Atmosphere ───────────────────────────────────────────────────────────────
-prof = us_standard_atmosphere()
+prof = afgl_us_standard_50lev()
 
 # ── Forward model ─────────────────────────────────────────────────────────────
 println("Building τ cube...")
