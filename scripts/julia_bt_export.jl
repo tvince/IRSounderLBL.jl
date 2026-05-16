@@ -8,7 +8,7 @@ Flags should match arts_validation.py:
 Output: data/julia_bt_645_800.csv  (nu_cm1, BT_K at 0.25 cm⁻¹ IASI grid)
 
 Run with:
-  julia --project scripts/julia_bt_export.jl
+  julia --project -t auto scripts/julia_bt_export.jl
 """
 
 using RadiativeTransfer
