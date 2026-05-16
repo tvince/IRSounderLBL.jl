@@ -104,23 +104,39 @@ function iasi_forward_model(prof::AtmosphericProfile,
     n_ν_hi   = ν_grid_hi.n
 
     # ── 3. Build optical depth cube ──────────────────────────────────────
-    τ_layers  = zeros(Float64, n_ν_hi, n_layers)
+    τ_layers     = zeros(Float64, n_ν_hi, n_layers)
+    n_levels     = n_layers + 1
     Nair_per_vmr = 2.1209e22   # molec/(cm²·hPa)
-    for k in 1:n_layers
-        # Line-by-line: use Curtis-Godson effective VMR, pressure, and temperature
-        for (sp, ll) in linelists
-            vmr = haskey(layers.vmr_cg, sp) ? layers.vmr_cg[sp][k] : 0.0
-            vmr == 0.0 && continue
-            p_cg_atm = layers.p_cg[sp][k] / 1013.25
-            T_cg_sp  = layers.T_cg[sp][k]
-            vmr_self = (sp == H2O) ? vmr : 0.0
-            σ_sp = compute_voigt_cross_sections(ν_grid_hi, ll, T_cg_sp, p_cg_atm;
-                                                 vmr_self=vmr_self,
-                                                 cutoff=cutoff, backend=backend)
-            τ_layers[:, k] .+= σ_sp .* (vmr * layers.Δp[k] * Nair_per_vmr)
+
+    # LBL: trapezoidal α integration — evaluate σ at each level boundary and
+    # share between adjacent layers (N_levels evaluations vs N_layers previously).
+    # τ_k = ½ (σ_bot × VMR_bot + σ_top × VMR_top) × Δp × Nair
+    for (sp, ll) in linelists
+        vmr_lev = get(prof.vmr, sp, nothing)
+        isnothing(vmr_lev) && continue
+
+        σ_lev = Matrix{Float64}(undef, n_ν_hi, n_levels)
+        for lev in 1:n_levels
+            p_atm    = prof.pressure[lev] / 1013.25
+            T_lev    = Float64(prof.temperature[lev])
+            vmr_self = (sp == H2O) ? Float64(vmr_lev[lev]) : 0.0
+            σ_lev[:, lev] = compute_voigt_cross_sections(ν_grid_hi, ll, T_lev, p_atm;
+                                                          vmr_self=vmr_self,
+                                                          cutoff=cutoff, backend=backend)
         end
 
-        # Continua: use arithmetic mid-layer conditions (smooth, no CG needed)
+        for k in 1:n_layers
+            vmr_bot = Float64(vmr_lev[k])
+            vmr_top = Float64(vmr_lev[k + 1])
+            c = 0.5 * layers.Δp[k] * Nair_per_vmr
+            @inbounds @simd for i in 1:n_ν_hi
+                τ_layers[i, k] += c * (σ_lev[i, k] * vmr_bot + σ_lev[i, k + 1] * vmr_top)
+            end
+        end
+    end
+
+    # Continua: mid-layer conditions (smooth — trapezoidal correction negligible)
+    for k in 1:n_layers
         vmr_h2o = haskey(layers.vmr_mid, H2O) ? layers.vmr_mid[H2O][k] : 0.0
         vmr_co2 = haskey(layers.vmr_mid, CO2) ? layers.vmr_mid[CO2][k] : 4.15e-4
         dz_cm   = _dp_to_dz_cm(layers.Δp[k], layers.p_mid[k], layers.T_mid[k])
