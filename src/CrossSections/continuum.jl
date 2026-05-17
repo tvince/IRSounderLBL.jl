@@ -1,90 +1,88 @@
 """
-MT-CKD (Mlawer–Tobin–Clough–Kneizys–Davies) water vapor and CO2 continuum
-absorption.
+H₂O and CO₂ continuum absorption.
 
-This module implements simplified analytical fits to the MT-CKD 3.5 continuum,
-suitable for research and operational forward modelling.
+H₂O: MT-CKD 4.3 continuum (Mlawer et al. 2012, doi:10.1098/rsta.2011.0295).
+  Tabulated self and foreign continuum reference coefficients at T=296 K, p=1013 mbar
+  are read from data/mt_ckd_h2o/mt_ckd43_h2o_coeffs.csv (pre-processed from the
+  AER netCDF file absco-ref_wv-mt-ckd.nc, MT_CKD_H2O v4.3).
 
-Reference: Mlawer et al. (2012), Phil. Trans. R. Soc. A 370, 2520–2556.
-           Clough et al. (1989), JQSRT 41, 209–217.
+  Formula (from mt_ckd_h2o_module.f90):
+    rho_rat  = (p/p_ref) * (T_ref/T)
+    rad(ν,T) = ν × tanh(RADCN2×ν / 2T)          [cm⁻¹]
+    k_self   = Cs(ν) × (T_ref/T)^texp × vmr × rho_rat × rad × n_H₂O
+    k_for    = Cf(ν)              × (1−vmr) × rho_rat × rad × n_H₂O
+    k_cont   = k_self + k_for                      [cm⁻¹]
+
+CO₂: simplified CIA fit (Hartmann et al. 2002).
 """
 
-# Physical constants
-const _KB = 1.380649e-23   # J/K
-const _NA = 6.02214076e23  # mol⁻¹
-const _P0 = 1013.25        # reference pressure, hPa
+const _KB      = 1.380649e-23   # J/K
+const _RADCN2  = 1.4387769      # cm·K  (hc/k)
+const _P_REF   = 1013.0         # reference pressure (mbar = hPa)
+const _T_REF   = 296.0          # reference temperature (K)
 
-"""
-    h2o_self_continuum_coeff(ν) -> Float64
+# ── MT-CKD 4.3 lookup table (loaded once at module init) ─────────────────────
 
-Self-continuum absorption coefficient for water vapor at 296 K (cm²/molec/atm).
-Polynomial fit to MT-CKD 3.5 values in the 0–3000 cm⁻¹ window.
-"""
-function h2o_self_continuum_coeff(ν::Float64)::Float64
-    # Piecewise representation of the self-continuum
-    if ν < 100.0
-        return 0.0
-    elseif ν <= 600.0
-        # Microwave/far-IR window: relatively flat
-        return 6.0e-24
-    elseif ν <= 1250.0
-        # Rotational band vicinity — use exponential decay from band edges
-        c = 6.0e-24
-        return c * exp(-2.0e-3 * (ν - 600.0))
-    elseif ν <= 1700.0
-        # 8–12 μm window
-        return 2.0e-26
-    elseif ν <= 2200.0
-        # Between 6 μm and 4.3 μm windows
-        return 4.0e-25 * exp(-3.5e-4 * (ν - 1700.0))
-    elseif ν <= 2800.0
-        # 4 μm window
-        return 1.0e-26
-    else
-        return 1.0e-27
+const _CKD_CSV = joinpath(@__DIR__, "..", "..", "data", "mt_ckd_h2o", "mt_ckd43_h2o_coeffs.csv")
+
+function _load_ckd_table()
+    nu_v   = Float64[]
+    Cs_v   = Float64[]
+    Cf_v   = Float64[]
+    texp_v = Float64[]
+    open(_CKD_CSV) do f
+        readline(f)  # skip header
+        for line in eachline(f)
+            parts = split(line, ',')
+            push!(nu_v,   parse(Float64, parts[1]))
+            push!(Cs_v,   parse(Float64, parts[2]))
+            push!(Cf_v,   parse(Float64, parts[3]))
+            push!(texp_v, parse(Float64, parts[4]))
+        end
     end
+    itp_Cs   = linear_interpolation(nu_v, Cs_v,   extrapolation_bc=Flat())
+    itp_Cf   = linear_interpolation(nu_v, Cf_v,   extrapolation_bc=Flat())
+    itp_texp = linear_interpolation(nu_v, texp_v, extrapolation_bc=Flat())
+    return (itp_Cs, itp_Cf, itp_texp)
 end
 
-"""
-    h2o_foreign_continuum_coeff(ν) -> Float64
+const _CKD = _load_ckd_table()
 
-Foreign (air-broadened) continuum coefficient at 296 K (cm²/molec/atm).
-Approximately 5× smaller than self-continuum.
-"""
-function h2o_foreign_continuum_coeff(ν::Float64)::Float64
-    return h2o_self_continuum_coeff(ν) * 0.2
+# ── Radiation field term ──────────────────────────────────────────────────────
+
+@inline function _radfn(ν::Float64, T::Float64)::Float64
+    x = _RADCN2 * ν / T
+    x ≤ 0.01 && return 0.5 * x * ν
+    x ≤ 10.0 && return ν * (1.0 - exp(-x)) / (1.0 + exp(-x))
+    return ν
 end
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 """
     h2o_continuum(ν_grid, vmr_h2o, p_hPa, T) -> Vector{Float64}
 
-Compute MT-CKD water vapour continuum absorption coefficient k_cont
-(cm⁻¹) for each wavenumber in `ν_grid`.
-
-Uses the Clough (1992) temperature scaling for the self continuum:
-    C_s(T) = C_s(296) × exp[−1800 × (1/T − 1/296)]
+MT-CKD 4.3 H₂O self + foreign continuum absorption coefficient [cm⁻¹].
 """
 function h2o_continuum(ν_grid::WavenumberGrid,
                        vmr_h2o::Float64,
                        p_hPa::Float64,
                        T::Float64)::Vector{Float64}
-    p_atm  = p_hPa / 1013.25
-    p_h2o  = vmr_h2o * p_atm   # partial pressure of H2O (atm)
-    p_dry  = p_atm - p_h2o
+    rho_rat = (p_hPa / _P_REF) * (_T_REF / T)
+    n_h2o   = vmr_h2o * p_hPa * 100.0 / (_KB * T) * 1e-6  # molec/cm³
 
-    # MT-CKD temperature scaling exponents (approximate)
-    T_scale_self    = exp(-1800.0 * (1.0/T - 1.0/296.0))
-    T_scale_foreign = exp( -700.0 * (1.0/T - 1.0/296.0))
-
-    # Number density of H2O (molec/cm³)
-    n_h2o = vmr_h2o * p_hPa * 100.0 / (_KB * T) * 1e-6  # Pa→cm³
+    itp_Cs, itp_Cf, itp_texp = _CKD
 
     k = Vector{Float64}(undef, ν_grid.n)
-    for (i, ν) in enumerate(ν_grid.ν)
-        Cs = h2o_self_continuum_coeff(ν)    * T_scale_self
-        Cf = h2o_foreign_continuum_coeff(ν) * T_scale_foreign
-        # k [cm⁻¹] = n_h2o × (Cs × p_h2o + Cf × p_dry)
-        k[i] = n_h2o * (Cs * p_h2o + Cf * p_dry)
+    @inbounds for (i, ν) in enumerate(ν_grid.ν)
+        Cs   = itp_Cs(ν)
+        Cf   = itp_Cf(ν)
+        texp = itp_texp(ν)
+        rad  = _radfn(ν, T)
+
+        k_self    = Cs * (_T_REF / T)^texp * vmr_h2o       * rho_rat * rad * n_h2o
+        k_foreign = Cf                     * (1.0 - vmr_h2o) * rho_rat * rad * n_h2o
+        k[i] = k_self + k_foreign
     end
     return k
 end
@@ -92,34 +90,28 @@ end
 """
     co2_continuum(ν_grid, vmr_co2, p_hPa, T) -> Vector{Float64}
 
-CO2 collision-induced absorption continuum (cm⁻¹).
-Important in the 1200–1500 cm⁻¹ region (near-wing of ν₂ band).
-
-Simplified fit based on Hartmann et al. (2002) broadband co2 CIA.
+CO₂ collision-induced absorption continuum [cm⁻¹]. Simplified CIA fit.
 """
 function co2_continuum(ν_grid::WavenumberGrid,
                        vmr_co2::Float64,
                        p_hPa::Float64,
                        T::Float64)::Vector{Float64}
-    p_atm = p_hPa / 1013.25
     n_co2 = vmr_co2 * p_hPa * 100.0 / (_KB * T) * 1e-6  # molec/cm³
+    n_air = p_hPa * 100.0 / (_KB * T) * 1e-6
 
-    # CO2 CIA coefficient (cm⁵/molec²) — approximate fit
     function co2_cia(ν)
-        if 1200.0 <= ν <= 1500.0
-            return 1.0e-47 * exp(-((ν - 1350.0)/150.0)^2)
-        elseif 2300.0 <= ν <= 2400.0
+        if 1200.0 ≤ ν ≤ 1500.0
+            return 1.0e-47 * exp(-((ν - 1350.0) / 150.0)^2)
+        elseif 2300.0 ≤ ν ≤ 2400.0
             return 5.0e-48
         else
             return 0.0
         end
     end
 
-    n_air = p_hPa * 100.0 / (_KB * T) * 1e-6  # total number density
-
     k = Vector{Float64}(undef, ν_grid.n)
-    for (i, ν) in enumerate(ν_grid.ν)
-        k[i] = co2_cia(ν) * n_co2 * n_air * (296.0/T)^0.5
+    @inbounds for (i, ν) in enumerate(ν_grid.ν)
+        k[i] = co2_cia(ν) * n_co2 * n_air * (296.0 / T)^0.5
     end
     return k
 end
