@@ -20,6 +20,7 @@ include("HITRAN/broadening.jl")
 include("CrossSections/voigt.jl")
 include("CrossSections/continuum.jl")
 include("CrossSections/optical_depth.jl")
+include("CrossSections/line_mixing.jl")
 
 # Solver
 include("Solver/planck.jl")
@@ -57,6 +58,9 @@ export weideman_voigt, faddeeva_voigt, pseudo_voigt_profile
 export voigt_profile, compute_voigt_cross_sections
 export h2o_continuum, co2_continuum
 export layer_optical_depth
+export RelmatLine, RelmatBand, HITRANRelmatData
+export load_hitran_relmat, compute_voigt_lm_cross_sections,
+       compute_lm_dispersive_correction
 
 # Solver exports
 export planck_radiance, brightness_temperature
