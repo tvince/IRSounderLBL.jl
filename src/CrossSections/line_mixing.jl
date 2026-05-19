@@ -77,6 +77,53 @@ struct HITRANRelmatData
     wtfit::Dict{NTuple{2,Int8}, W0B0Table}
 end
 
+# ── Line-mixing dispatch wrappers ─────────────────────────────────────────────
+#
+# Pass an `AbstractLineMixing` subtype to `iasi_forward_model(..., line_mixing=…)`
+# to enable line mixing for CO2.  `nothing` (the default) leaves the existing
+# pure-Voigt path untouched.  Dispatch is on the wrapper *type* — VP_W will get
+# its own struct because it needs to carry cached eigendecompositions per (T,p).
+"""
+    AbstractLineMixing
+
+Marker type for CO2 line-mixing models passed to `iasi_forward_model`.
+Concrete subtypes: [`VPYLineMixing`](@ref).
+"""
+abstract type AbstractLineMixing end
+
+"""
+    VPYLineMixing(data::HITRANRelmatData)
+
+First-order Rosenkranz (Voigt + dispersive perturbation) line mixing.
+Pass to `iasi_forward_model(...; line_mixing=VPYLineMixing(relmat))` to enable
+LM on the CO2 channel.  See `compute_voigt_lm_cross_sections`.
+"""
+struct VPYLineMixing <: AbstractLineMixing
+    data::HITRANRelmatData
+end
+
+# Per-species cross-section dispatch used by `iasi_forward_model`.
+# `nothing` and any non-CO2 species fall through to the plain Voigt path.
+# `VPYLineMixing` + CO2 routes through the Voigt+dispersive wrapper.
+function _species_cross_section(::Nothing, sp::GasSpecies, ν_grid, ll, T, p_atm;
+                                 vmr_self::Float64, cutoff::Float64, backend)
+    compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
+                                  vmr_self=vmr_self, cutoff=cutoff, backend=backend)
+end
+
+function _species_cross_section(lm::AbstractLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
+                                 vmr_self::Float64, cutoff::Float64, backend)
+    compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
+                                  vmr_self=vmr_self, cutoff=cutoff, backend=backend)
+end
+
+function _species_cross_section(lm::VPYLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
+                                 vmr_self::Float64, cutoff::Float64, backend)
+    sp == CO2 || return compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
+                                                      vmr_self=vmr_self, cutoff=cutoff, backend=backend)
+    compute_voigt_lm_cross_sections(ν_grid, ll, lm.data, T, p_atm; cutoff=cutoff)
+end
+
 # ── File parsers ──────────────────────────────────────────────────────────────
 
 function _parse_fortran_d(s::AbstractString)::Float64

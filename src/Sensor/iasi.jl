@@ -67,6 +67,7 @@ end
                        cutoff=25.0,
                        apply_continuum=true,
                        apply_ils=true,
+                       line_mixing=nothing,
                        backend=CPU()) -> (ν_iasi, R_iasi, BT_iasi)
 
 Full IASI forward model: atmosphere → level optical depths → RTE → ILS → IASI L1C.
@@ -82,6 +83,7 @@ Full IASI forward model: atmosphere → level optical depths → RTE → ILS →
 - `cutoff`:           Voigt wing cutoff (cm⁻¹)
 - `apply_continuum`:  include MT-CKD H₂O and CO₂ continua (default true)
 - `apply_ils`:        convolve with IASI Norton-Beer ILS before resampling (default true)
+- `line_mixing`:      CO2 line-mixing model, e.g. `VPYLineMixing(relmat)`; `nothing` (default) disables LM
 - `backend`:          compute backend
 
 # Returns
@@ -98,6 +100,7 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              cutoff::Float64          = 25.0,
                              apply_continuum::Bool    = true,
                              apply_ils::Bool          = true,
+                             line_mixing::Union{Nothing, AbstractLineMixing} = nothing,
                              backend                  = CPU())
 
     # ── 1. High-resolution internal grid ────────────────────────────────
@@ -121,9 +124,10 @@ function iasi_forward_model(prof::AtmosphericProfile,
             p_cg_atm = layers.p_cg[sp][k] / 1013.25
             T_cg_sp  = layers.T_cg[sp][k]
             vmr_self = (sp == H2O) ? vmr : 0.0
-            σ_sp = compute_voigt_cross_sections(ν_grid_hi, ll, T_cg_sp, p_cg_atm;
-                                                 vmr_self=vmr_self,
-                                                 cutoff=cutoff, backend=backend)
+            σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll,
+                                           T_cg_sp, p_cg_atm;
+                                           vmr_self=vmr_self,
+                                           cutoff=cutoff, backend=backend)
             τ_layers[:, k] .+= σ_sp .* (vmr * layers.Δp[k] * Nair_per_vmr)
         end
     end

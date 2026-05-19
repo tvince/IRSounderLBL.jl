@@ -61,6 +61,7 @@ export layer_optical_depth
 export RelmatLine, RelmatBand, HITRANRelmatData
 export load_hitran_relmat, compute_voigt_lm_cross_sections,
        compute_lm_dispersive_correction
+export AbstractLineMixing, VPYLineMixing
 
 # Solver exports
 export planck_radiance, brightness_temperature
