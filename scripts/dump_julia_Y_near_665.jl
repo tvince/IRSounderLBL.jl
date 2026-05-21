@@ -19,6 +19,7 @@ const NU_HI = 665.5
 const T = 288.20      # AFGL US Std surface temperature
 const P_atm = 1.0132  # surface pressure
 const LM_DIR = "data/Line-mixing_HITRAN2020/data_new"
+const OUT_CSV = "data/julia_Y_near_665.csv"
 
 # Load relmat + WTfit
 relmat = load_hitran_relmat(LM_DIR, 645.0, 800.0; stot_min=0.0)
@@ -40,6 +41,7 @@ println("Lines in $(NU_LO)–$(NU_HI) cm⁻¹ with |Y| > 0:")
 calc_W_and_Y = getfield(RadiativeTransfer, :_calc_W_and_Y)
 
 big_Y = NamedTuple[]
+csv_rows = NamedTuple[]
 for band in relmat.bands
     Int(band.li) > 8 && continue
     lli = Int8(min(band.li, band.lf))
@@ -69,12 +71,27 @@ for band in relmat.bands
                 band.name, iso, Int(rl.Ji), Int(rl.branch),
                 rl.ν, rl.gV_air, Y_band[i], Yp, S_T)
 
+        push!(csv_rows, (band=band.name, iso=iso, Ji=Int(rl.Ji), branch=Int(rl.branch),
+                         ν=rl.ν, gV_air=rl.gV_air, Y_per_atm=Y_band[i], Y_dim=Yp, S=S_T))
+
         if abs(Yp) > 0.02
             push!(big_Y, (band=band.name, iso=iso, Ji=Int(rl.Ji), br=Int(rl.branch),
                           ν=rl.ν, Y=Y_band[i], Yp=Yp, S=S_T))
         end
     end
 end
+
+# Write CSV
+sort!(csv_rows, by = r -> (r.ν, r.iso))
+open(OUT_CSV, "w") do io
+    println(io, "band,iso,Ji,branch,nu_cm,G0_air_cm,Y_per_atm,Y_dim_at_TP,S_T")
+    for r in csv_rows
+        @printf(io, "%s,%d,%d,%+d,%.6f,%.5e,%+.6e,%+.6e,%.4e\n",
+                r.band, r.iso, r.Ji, r.branch, r.ν, r.gV_air,
+                r.Y_per_atm, r.Y_dim, r.S)
+    end
+end
+@printf("\nWrote %d rows → %s\n", length(csv_rows), OUT_CSV)
 
 println("\nLines with |Y·p| > 0.02 (would be significant):")
 sort!(big_Y, by=x->-abs(x.Yp))
