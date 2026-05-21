@@ -282,4 +282,95 @@ using RadiativeTransfer
         @test cb.gpu_backend in (:metal, :cuda, :none)
     end
 
+    @testset "Line mixing — band_modes no-coupling limit" begin
+        RL = RadiativeTransfer.RelmatLine
+        RB = RadiativeTransfer.RelmatBand
+        WT = RadiativeTransfer.W0B0Table
+
+        # Two synthetic lines, isotopologue 1, identical broadening, separated by 10 cm⁻¹.
+        # Empty WTfit table ⇒ no off-diagonal coupling ⇒ M = diag(ν₀ + i·p·γ_L).
+        # Expect poles at the line centres (modulo eigen ordering), amplitudes = S(T).
+        line1 = RL(Int8(1), 700.0, Int16(0), Int8(0), 0.07, Float32(0.7), Float32(0.0),
+                   200.0, 1.0, 0.5, 1.0)
+        line2 = RL(Int8(1), 710.0, Int16(2), Int8(0), 0.07, Float32(0.7), Float32(0.0),
+                   220.0, 1.0, 0.45, 1.0)
+        band  = RB("TEST01", Int8(1), Int8(1), Int8(1), 700.0, 710.0, [line1, line2])
+
+        T     = 296.0
+        p_atm = 0.5
+        modes = RadiativeTransfer.band_modes(band, WT(), T, p_atm)
+
+        @test length(modes.poles) == 2
+        @test length(modes.amplitudes) == 2
+
+        # Sort poles by real part (eigen may reorder)
+        idx = sortperm(real.(modes.poles))
+        λ1, λ2 = modes.poles[idx[1]], modes.poles[idx[2]]
+        A1, A2 = modes.amplitudes[idx[1]], modes.amplitudes[idx[2]]
+
+        γ_L = 0.07   # at T=T_REF, exponent 0.7 gives factor 1.0
+        @test real(λ1) ≈ 700.0 atol = 1e-10
+        @test real(λ2) ≈ 710.0 atol = 1e-10
+        @test imag(λ1) ≈ p_atm * γ_L atol = 1e-10
+        @test imag(λ2) ≈ p_atm * γ_L atol = 1e-10
+
+        # In no-coupling limit Aₖ should be real and equal Sₖ(T=T_REF) = DipoT²·PopuT0·ν·stim(T_REF)
+        S1 = line1.DipoT^2 * line1.PopuT0 * line1.ν * (1 - exp(-1.4388 * line1.ν / T))
+        S2 = line2.DipoT^2 * line2.PopuT0 * line2.ν * (1 - exp(-1.4388 * line2.ν / T))
+        @test real(A1) ≈ S1 rtol = 1e-12
+        @test real(A2) ≈ S2 rtol = 1e-12
+        @test abs(imag(A1)) < 1e-12 * abs(real(A1))
+        @test abs(imag(A2)) < 1e-12 * abs(real(A2))
+
+        # Doppler scaling sanity: γ_D ≈ 3.58e-7 · 705 · √(296/44) ≈ 6.5e-4
+        γ_D_expected = 3.5812e-7 * 705.0 * sqrt(T / 43.98983)
+        @test modes.f ≈ sqrt(log(2.0)) / γ_D_expected rtol = 1e-12
+    end
+
+    @testset "Line mixing — VP_W evaluator vs Voigt baseline (no coupling)" begin
+        using SpecialFunctions: erfcx
+        RL = RadiativeTransfer.RelmatLine
+        RB = RadiativeTransfer.RelmatBand
+        WT = RadiativeTransfer.W0B0Table
+
+        # Two-line synthetic band, empty WTfit ⇒ M is diagonal.
+        # Poles = ν₀ + i·p·γ_L exactly; amplitudes = S(T) exactly.
+        # `compute_vpw_band_xsec` must reproduce the band-uniform-γ_D Voigt sum.
+        line1 = RL(Int8(1), 700.00, Int16(0), Int8(0), 0.07, Float32(0.7), Float32(0.0),
+                   200.0, 1.0, 0.5, 1.0)
+        line2 = RL(Int8(1), 700.05, Int16(2), Int8(0), 0.07, Float32(0.7), Float32(0.0),
+                   220.0, 1.0, 0.45, 1.0)
+        band  = RB("TEST02", Int8(1), Int8(1), Int8(1), 700.0, 700.05, [line1, line2])
+
+        T     = 296.0
+        p_atm = 0.5
+        modes = RadiativeTransfer.band_modes(band, WT(), T, p_atm)
+
+        ν_grid = wavenumber_grid(699.5, 700.5, 0.005)
+        σ_vpw  = RadiativeTransfer.compute_vpw_band_xsec(ν_grid, modes; cutoff=10.0)
+
+        # Reference: pure Voigt sum at band-uniform γ_D (same as modes.f)
+        γ_L     = 0.07 * p_atm   # T = T_REF
+        f_band  = modes.f
+        σ_ref   = zeros(ν_grid.n)
+        for line in (line1, line2)
+            stim = 1.0 - exp(-1.4388 * line.ν / T)
+            S_T  = line.DipoT^2 * line.PopuT0 * line.ν * stim   # T = T_REF
+            for i in 1:ν_grid.n
+                x  = (ν_grid.ν[i] - line.ν) * f_band
+                y  = γ_L * f_band
+                wz = erfcx(complex(y, -x))
+                σ_ref[i] += S_T * f_band * (1.0 / sqrt(π)) * real(wz)
+            end
+        end
+
+        rel = maximum(abs.(σ_vpw .- σ_ref)) / maximum(abs, σ_ref)
+        @test rel < 1e-12
+
+        # Cutoff sanity: poles outside the window contribute zero
+        ν_far = wavenumber_grid(800.0, 800.5, 0.005)
+        σ_far = RadiativeTransfer.compute_vpw_band_xsec(ν_far, modes; cutoff=10.0)
+        @test all(==(0.0), σ_far)
+    end
+
 end

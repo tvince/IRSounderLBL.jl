@@ -61,7 +61,10 @@ export layer_optical_depth
 export RelmatLine, RelmatBand, HITRANRelmatData
 export load_hitran_relmat, compute_voigt_lm_cross_sections,
        compute_lm_dispersive_correction
-export AbstractLineMixing, VPYLineMixing
+export AbstractLineMixing, VPYLineMixing, VPWLineMixing
+export BandModes, band_modes, compute_vpw_band_xsec,
+       compute_vpw_band_perturbation, compute_voigt_vpw_cross_sections,
+       default_vpw_whitelist
 
 # Solver exports
 export planck_radiance, brightness_temperature
