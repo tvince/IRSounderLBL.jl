@@ -104,7 +104,7 @@ struct VPYLineMixing <: AbstractLineMixing
 end
 
 """
-    VPWLineMixing(data; n_top=5, isotopes=nothing, whitelist=nothing)
+    VPWLineMixing(data; n_top=5, isotopes=nothing, ν_window=nothing, whitelist=nothing)
 
 Full-matrix line mixing for CO₂.  Bands in `whitelist` receive the
 eigendecomposition treatment (`band_modes` + `compute_vpw_band_xsec`); all
@@ -116,7 +116,10 @@ If `whitelist` is `nothing` (default), the whitelist is built by
 [`default_vpw_whitelist`]: when `isotopes === nothing`, the top-`n_top` bands
 overall are selected, weighted by `S(T_REF) × natural isotopologue abundance`;
 when `isotopes` is given (e.g. `[1, 2]`), the top-`n_top` bands per isotope
-(by raw `S(T_REF)`) are picked.
+(by raw `S(T_REF)`) are picked.  When `ν_window=(ν_lo, ν_hi)` is given, only
+bands whose [ν_min, ν_max] overlaps the window are considered for scoring —
+useful when `data` was loaded over a larger range than the forward model
+will evaluate (e.g. full IASI relmat but a 15 µm-only run).
 
 # Fields
 - `data`:      `HITRANRelmatData` (relaxation-matrix bands + WTfit tables)
@@ -130,9 +133,10 @@ end
 function VPWLineMixing(data::HITRANRelmatData;
                        n_top::Int = 5,
                        isotopes::Union{Nothing, Vector{Int}} = nothing,
+                       ν_window::Union{Nothing, Tuple{Real,Real}} = nothing,
                        whitelist::Union{Nothing, Set{String}} = nothing)
     wl = isnothing(whitelist) ?
-         default_vpw_whitelist(data; n_top=n_top, isotopes=isotopes) :
+         default_vpw_whitelist(data; n_top=n_top, isotopes=isotopes, ν_window=ν_window) :
          whitelist
     return VPWLineMixing(data, wl)
 end
@@ -575,7 +579,7 @@ const _CO2_ISO_ABUND = Dict(
 )
 
 """
-    default_vpw_whitelist(data; n_top=5, isotopes=nothing) -> Set{String}
+    default_vpw_whitelist(data; n_top=5, isotopes=nothing, ν_window=nothing) -> Set{String}
 
 Build a default VP_W band whitelist.
 
@@ -585,12 +589,17 @@ Build a default VP_W band whitelist.
 - `isotopes` given (e.g. `[1, 2]`): return the union of the top-`n_top` bands
   *per isotope* by raw `S(T_REF)` (abundance weighting drops out since the
   per-isotope sets are disjoint).
+- `ν_window=(ν_lo, ν_hi)`: restrict scoring to bands whose [ν_min, ν_max]
+  overlaps the window.  Useful when `data` was loaded over a wider range than
+  the forward model will evaluate, so the whitelist stays relevant to the
+  modelled region.
 
 Used as the default whitelist by [`VPWLineMixing`](@ref).
 """
 function default_vpw_whitelist(data::HITRANRelmatData;
                                n_top::Int = 5,
-                               isotopes::Union{Nothing, Vector{Int}} = nothing)::Set{String}
+                               isotopes::Union{Nothing, Vector{Int}} = nothing,
+                               ν_window::Union{Nothing, Tuple{Real,Real}} = nothing)::Set{String}
     band_S(band) = begin
         S = 0.0
         for line in band.lines
@@ -600,9 +609,13 @@ function default_vpw_whitelist(data::HITRANRelmatData;
         S
     end
 
+    in_window(band) = isnothing(ν_window) ||
+                      (band.ν_max >= ν_window[1] && band.ν_min <= ν_window[2])
+
     if isnothing(isotopes)
         scored = Tuple{String, Float64}[]
         for band in data.bands
+            in_window(band) || continue
             abund = get(_CO2_ISO_ABUND, Int(band.isot), 1e-8)
             push!(scored, (band.name, band_S(band) * abund))
         end
@@ -616,6 +629,7 @@ function default_vpw_whitelist(data::HITRANRelmatData;
         scored = Tuple{String, Float64}[]
         for band in data.bands
             Int(band.isot) == iso || continue
+            in_window(band) || continue
             push!(scored, (band.name, band_S(band)))
         end
         sort!(scored, by=x->x[2], rev=true)
