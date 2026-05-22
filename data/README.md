@@ -16,6 +16,9 @@ as a map; regenerate anything missing rather than checking it in.
 | `mt_ckd_h2o/` | MT-CKD 4.3 H₂O continuum tables (AER). |
 | `tips/` | TIPS-2024 raw tables. |
 | `Line-mixing_HITRAN2020/` | Lamouroux/HITRAN line-mixing data + Fortran reference. |
+| `cia/CO2-CO2_2024.cia` | HITRAN CIA (Karman et al. 2019, 2024 update). Download from hitran.org/cia/ → CO2-CO2 → latest record. Used by `co2_continuum`. |
+| `cia/N2-N2_2021.cia`   | HITRAN CIA, N₂–N₂ homogeneous pair. Used by `n2_continuum`. |
+| `cia/O2-O2_2024.cia`   | HITRAN CIA, O₂–O₂ homogeneous pair. Used by `o2_continuum`. |
 | `standard_atmospheres/` | AFGL standard atmospheres (raw). |
 
 ## Repo-tracked seeds (pre-prepared inputs, not generated)

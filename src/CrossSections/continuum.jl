@@ -13,13 +13,21 @@ H₂O: MT-CKD 4.3 continuum (Mlawer et al. 2012, doi:10.1098/rsta.2011.0295).
     k_for    = Cf(ν)              × (1−vmr) × rho_rat × rad × n_H₂O
     k_cont   = k_self + k_for                      [cm⁻¹]
 
-CO₂: simplified CIA fit (Hartmann et al. 2002).
+CO₂, N₂, O₂: HITRAN CIA tables (Karman et al. 2019, doi:10.1016/j.icarus.2019.02.034).
+  Tabulated collision-induced cross sections σ(ν, T) [cm⁵/molec²] read from
+  data/cia/{CO2-CO2_2024,N2-N2_2021,O2-O2_2024}.cia.
+  Scaling:
+    k_CO₂ = σ_CO₂-CO₂(ν,T) × n_CO₂ × n_air     (scaled-to-air approximation)
+    k_N₂  = σ_N₂-N₂(ν,T)   × n_N₂²              (homogeneous)
+    k_O₂  = σ_O₂-O₂(ν,T)   × n_O₂²              (homogeneous)
 """
 
 const _KB      = 1.380649e-23   # J/K
 const _RADCN2  = 1.4387769      # cm·K  (hc/k)
 const _P_REF   = 1013.0         # reference pressure (mbar = hPa)
 const _T_REF   = 296.0          # reference temperature (K)
+const _N2_DRY_VMR = 0.78084     # N₂ mole fraction of dry air
+const _O2_DRY_VMR = 0.20946     # O₂ mole fraction of dry air
 
 # ── MT-CKD 4.3 lookup table (loaded once at module init) ─────────────────────
 
@@ -47,6 +55,80 @@ function _load_ckd_table()
 end
 
 const _CKD = _load_ckd_table()
+
+# ── HITRAN CIA lookup tables ─────────────────────────────────────────────────
+
+# A HITRAN .cia file is a list of (T, ν-range, σ(ν)) blocks. Different blocks
+# can cover different (and disjoint) spectral regions, so we keep them as a
+# vector and do per-query lookup: for a given ν, filter to blocks containing
+# ν, then linearly interpolate σ in T between the two bracketing applicable
+# blocks. `_load_cia_table` returns `nothing` if the data file is missing.
+struct _CIABlock
+    T::Float64
+    νmin::Float64
+    νmax::Float64
+    itp::Any  # ν → σ linear interpolator (extrapolates to 0 outside ν range)
+end
+
+function _load_cia_table(path::AbstractString)
+    isfile(path) || return nothing
+
+    blocks = _CIABlock[]
+    cur_T  = NaN
+    cur_ν  = Float64[]
+    cur_σ  = Float64[]
+
+    function flush!()
+        isempty(cur_ν) && return
+        # HITRAN sometimes stores ν descending; sort ascending for interp.
+        if !issorted(cur_ν)
+            perm = sortperm(cur_ν)
+            cur_ν = cur_ν[perm]
+            cur_σ = cur_σ[perm]
+        end
+        itp = linear_interpolation(cur_ν, cur_σ, extrapolation_bc=0.0)
+        push!(blocks, _CIABlock(cur_T, first(cur_ν), last(cur_ν), itp))
+        cur_ν = Float64[]; cur_σ = Float64[]
+    end
+
+    open(path) do f
+        for line in eachline(f)
+            stripped = strip(line)
+            isempty(stripped) && continue
+            # Header lines start with the species name (alphabetic first
+            # non-whitespace char); data lines start with a numeric wavenumber.
+            if isletter(stripped[1])
+                flush!()
+                parts = split(stripped)
+                # Format: pair νmin νmax N T σmax ...
+                cur_T = parse(Float64, parts[5])
+            else
+                parts = split(stripped)
+                push!(cur_ν, parse(Float64, parts[1]))
+                # HITRAN CIA tables contain occasional small negative σ values
+                # from baseline-subtraction noise; clamp to 0 (nonphysical for
+                # absorption).
+                push!(cur_σ, max(0.0, parse(Float64, parts[2])))
+            end
+        end
+        flush!()
+    end
+
+    return isempty(blocks) ? nothing : blocks
+end
+
+const _CIA_DIR     = joinpath(@__DIR__, "..", "..", "data", "cia")
+const _CIA_CO2_FILE = joinpath(_CIA_DIR, "CO2-CO2_2024.cia")
+const _CIA_N2_FILE  = joinpath(_CIA_DIR, "N2-N2_2021.cia")
+const _CIA_O2_FILE  = joinpath(_CIA_DIR, "O2-O2_2024.cia")
+
+const _CIA_CO2 = _load_cia_table(_CIA_CO2_FILE)
+const _CIA_N2  = _load_cia_table(_CIA_N2_FILE)
+const _CIA_O2  = _load_cia_table(_CIA_O2_FILE)
+
+const _CIA_CO2_WARNED = Ref(false)
+const _CIA_N2_WARNED  = Ref(false)
+const _CIA_O2_WARNED  = Ref(false)
 
 # ── Radiation field term ──────────────────────────────────────────────────────
 
@@ -90,28 +172,120 @@ end
 """
     co2_continuum(ν_grid, vmr_co2, p_hPa, T) -> Vector{Float64}
 
-CO₂ collision-induced absorption continuum [cm⁻¹]. Simplified CIA fit.
+CO₂ collision-induced absorption continuum [cm⁻¹] from HITRAN CIA
+(CO₂–CO₂, Karman et al. 2019), scaled by `n_CO₂ × n_air` so CO₂–N₂/O₂
+collisions are treated as equivalent to CO₂–CO₂.
+
+Returns zeros (with a one-time warning) if `data/cia/CO2-CO2_2024.cia` is
+absent. T outside the table's range is clamped; ν outside the table's range
+contributes zero.
 """
 function co2_continuum(ν_grid::WavenumberGrid,
                        vmr_co2::Float64,
                        p_hPa::Float64,
                        T::Float64)::Vector{Float64}
-    n_co2 = vmr_co2 * p_hPa * 100.0 / (_KB * T) * 1e-6  # molec/cm³
-    n_air = p_hPa * 100.0 / (_KB * T) * 1e-6
-
-    function co2_cia(ν)
-        if 1200.0 ≤ ν ≤ 1500.0
-            return 1.0e-47 * exp(-((ν - 1350.0) / 150.0)^2)
-        elseif 2300.0 ≤ ν ≤ 2400.0
-            return 5.0e-48
-        else
-            return 0.0
+    if _CIA_CO2 === nothing
+        if !_CIA_CO2_WARNED[]
+            @warn "HITRAN CO₂–CO₂ CIA table not found at $_CIA_CO2_FILE; co2_continuum returns zeros. " *
+                  "Download CO2-CO2_2024.cia from hitran.org/cia/ to enable."
+            _CIA_CO2_WARNED[] = true
         end
+        return zeros(Float64, ν_grid.n)
     end
+
+    n_co2 = vmr_co2 * p_hPa * 100.0 / (_KB * T) * 1e-6  # molec/cm³
+    n_air = p_hPa            * 100.0 / (_KB * T) * 1e-6
+    nn    = n_co2 * n_air
 
     k = Vector{Float64}(undef, ν_grid.n)
     @inbounds for (i, ν) in enumerate(ν_grid.ν)
-        k[i] = co2_cia(ν) * n_co2 * n_air * (296.0 / T)^0.5
+        k[i] = _cia_σ(_CIA_CO2, ν, T) * nn
     end
     return k
+end
+
+"""
+    n2_continuum(ν_grid, vmr_n2, p_hPa, T) -> Vector{Float64}
+
+N₂–N₂ collision-induced absorption continuum [cm⁻¹] from HITRAN CIA
+(homogeneous pair, scaled by `n_N₂²`). Dominates the 4 µm region around
+2400 cm⁻¹ for atmospheric conditions.
+"""
+function n2_continuum(ν_grid::WavenumberGrid,
+                      vmr_n2::Float64,
+                      p_hPa::Float64,
+                      T::Float64)::Vector{Float64}
+    if _CIA_N2 === nothing
+        if !_CIA_N2_WARNED[]
+            @warn "HITRAN N₂–N₂ CIA table not found at $_CIA_N2_FILE; n2_continuum returns zeros. " *
+                  "Download N2-N2_2021.cia from hitran.org/cia/ to enable."
+            _CIA_N2_WARNED[] = true
+        end
+        return zeros(Float64, ν_grid.n)
+    end
+    n_n2 = vmr_n2 * p_hPa * 100.0 / (_KB * T) * 1e-6
+    nn   = n_n2 * n_n2
+    k = Vector{Float64}(undef, ν_grid.n)
+    @inbounds for (i, ν) in enumerate(ν_grid.ν)
+        k[i] = _cia_σ(_CIA_N2, ν, T) * nn
+    end
+    return k
+end
+
+"""
+    o2_continuum(ν_grid, vmr_o2, p_hPa, T) -> Vector{Float64}
+
+O₂–O₂ collision-induced absorption continuum [cm⁻¹] from HITRAN CIA
+(homogeneous pair, scaled by `n_O₂²`). Dominates around 1556 cm⁻¹
+(O₂ fundamental) — overlaps the H₂O ν₂ band.
+"""
+function o2_continuum(ν_grid::WavenumberGrid,
+                      vmr_o2::Float64,
+                      p_hPa::Float64,
+                      T::Float64)::Vector{Float64}
+    if _CIA_O2 === nothing
+        if !_CIA_O2_WARNED[]
+            @warn "HITRAN O₂–O₂ CIA table not found at $_CIA_O2_FILE; o2_continuum returns zeros. " *
+                  "Download O2-O2_2024.cia from hitran.org/cia/ to enable."
+            _CIA_O2_WARNED[] = true
+        end
+        return zeros(Float64, ν_grid.n)
+    end
+    n_o2 = vmr_o2 * p_hPa * 100.0 / (_KB * T) * 1e-6
+    nn   = n_o2 * n_o2
+    k = Vector{Float64}(undef, ν_grid.n)
+    @inbounds for (i, ν) in enumerate(ν_grid.ν)
+        k[i] = _cia_σ(_CIA_O2, ν, T) * nn
+    end
+    return k
+end
+
+# Find blocks containing ν, then linearly interp σ in T between the bracketing
+# applicable blocks. Clamps to nearest block T outside the available range.
+function _cia_σ(blocks::Vector{_CIABlock}, ν::Float64, T::Float64)::Float64
+    T_lo, σ_lo = -Inf, 0.0
+    T_hi, σ_hi =  Inf, 0.0
+    any_match  = false
+    @inbounds for b in blocks
+        (ν < b.νmin || ν > b.νmax) && continue
+        any_match = true
+        σ = b.itp(ν)
+        if b.T ≤ T && b.T > T_lo
+            T_lo, σ_lo = b.T, σ
+        end
+        if b.T ≥ T && b.T < T_hi
+            T_hi, σ_hi = b.T, σ
+        end
+    end
+    any_match || return 0.0
+    if !isfinite(T_lo)
+        return σ_hi
+    elseif !isfinite(T_hi)
+        return σ_lo
+    elseif T_lo == T_hi
+        return σ_lo
+    else
+        w = (T - T_lo) / (T_hi - T_lo)
+        return (1.0 - w) * σ_lo + w * σ_hi
+    end
 end

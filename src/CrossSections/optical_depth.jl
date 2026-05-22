@@ -65,7 +65,12 @@ function layer_optical_depth(ν_grid::WavenumberGrid,
     k_co2_cont = co2_continuum(ν_grid, vmr_co2, p_hPa, T)
     τ_co2_cont = k_co2_cont .* dz_cm
 
-    return τ_lbl .+ τ_h2o_cont .+ τ_co2_cont
+    # ── N₂/O₂ CIA (dry-air fractions of the non-H₂O column) ─────────────
+    vmr_dry = 1.0 - vmr_h2o
+    τ_n2_cont = n2_continuum(ν_grid, _N2_DRY_VMR * vmr_dry, p_hPa, T) .* dz_cm
+    τ_o2_cont = o2_continuum(ν_grid, _O2_DRY_VMR * vmr_dry, p_hPa, T) .* dz_cm
+
+    return τ_lbl .+ τ_h2o_cont .+ τ_co2_cont .+ τ_n2_cont .+ τ_o2_cont
 end
 
 """
@@ -103,6 +108,9 @@ function layer_optical_depth(ν_grid::WavenumberGrid,
     dz_cm = _dp_to_dz_cm(Δp_hPa, p_hPa, T)
     τ .+= h2o_continuum(ν_grid, vmr_h2o, p_hPa, T) .* dz_cm
     τ .+= co2_continuum(ν_grid, vmr_co2, p_hPa, T) .* dz_cm
+    vmr_dry = 1.0 - vmr_h2o
+    τ .+= n2_continuum(ν_grid, _N2_DRY_VMR * vmr_dry, p_hPa, T) .* dz_cm
+    τ .+= o2_continuum(ν_grid, _O2_DRY_VMR * vmr_dry, p_hPa, T) .* dz_cm
 
     return τ
 end
