@@ -6,7 +6,7 @@ Run with:
   julia --project=. scripts/dump_julia_cia_sigma.jl
 """
 
-using RadiativeTransfer
+using IRSounderLBL
 using DelimitedFiles
 using Printf
 

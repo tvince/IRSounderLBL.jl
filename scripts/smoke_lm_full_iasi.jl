@@ -15,7 +15,7 @@ Run:
   julia --project -t auto scripts/smoke_lm_full_iasi.jl
 """
 
-using RadiativeTransfer
+using IRSounderLBL
 using Printf
 
 const NU_MIN  = 645.0

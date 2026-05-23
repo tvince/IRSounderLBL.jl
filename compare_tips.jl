@@ -1,4 +1,4 @@
-using RadiativeTransfer
+using IRSounderLBL
 using Plots
 using Printf
 using Statistics
@@ -116,7 +116,7 @@ BT_tips = run_forward_model("TIPS-2024")
 
 # ── Swap Q_ratio to old power-law ─────────────────────────────────────────────
 println("\n=== Swapping Q_ratio to power-law approximation ===")
-@eval RadiativeTransfer begin
+@eval IRSounderLBL begin
     const _Q_POWERLAW_EXPONENT = Dict{Tuple{Int,Int}, Float64}(
         (1,1)=>1.5, (1,2)=>1.5, (1,3)=>1.5,
         (2,1)=>1.0, (2,2)=>1.0, (2,3)=>1.0, (2,4)=>1.0,

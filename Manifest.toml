@@ -1049,7 +1049,7 @@ deps = ["InteractiveUtils", "JuliaSyntaxHighlighting", "Markdown", "Sockets", "S
 uuid = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
 version = "1.11.0"
 
-[[deps.RadiativeTransfer]]
+[[deps.IRSounderLBL]]
 deps = ["CUDA", "Downloads", "HDF5", "Interpolations", "JSON3", "KernelAbstractions", "Metal", "Plots", "ProgressMeter", "SpecialFunctions", "Tullio", "Unitful"]
 path = "."
 uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"

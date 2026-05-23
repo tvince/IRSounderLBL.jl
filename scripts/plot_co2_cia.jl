@@ -5,7 +5,7 @@ Compare the new HITRAN CO2-CO2 CIA cross sections to the old toy fit
 Output: data/co2_cia_old_vs_new.png
 """
 
-using RadiativeTransfer
+using IRSounderLBL
 using Plots
 using Printf
 

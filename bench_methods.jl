@@ -1,4 +1,4 @@
-using RadiativeTransfer
+using IRSounderLBL
 using KernelAbstractions
 using Metal
 using Printf

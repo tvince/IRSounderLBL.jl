@@ -1,6 +1,6 @@
 # Inspect VPWLineMixing's default whitelist for different ν ranges.
 # Same code, different behaviour depending on what `load_hitran_relmat` loaded.
-using RadiativeTransfer
+using IRSounderLBL
 using Printf
 
 const LM_DIR = "data/Line-mixing_HITRAN2020/data_new"

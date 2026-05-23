@@ -8,7 +8,7 @@ Run with:
   julia --project -t auto scripts/julia_bt_export_cont.jl
 """
 
-using RadiativeTransfer
+using IRSounderLBL
 using Printf
 
 const WITH_ILS        = false

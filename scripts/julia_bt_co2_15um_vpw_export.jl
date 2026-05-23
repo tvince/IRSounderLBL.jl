@@ -12,7 +12,7 @@ Run with:
   julia --project -t auto scripts/julia_bt_co2_15um_vpw_export.jl
 """
 
-using RadiativeTransfer
+using IRSounderLBL
 using Printf
 
 const NU_MIN   = 645.0

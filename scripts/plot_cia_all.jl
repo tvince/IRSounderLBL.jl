@@ -5,7 +5,7 @@ T=296 K, p=1013.25 hPa, dry-air composition.
 Output: data/cia_co2_n2_o2.png
 """
 
-using RadiativeTransfer
+using IRSounderLBL
 using Plots
 using Printf
 

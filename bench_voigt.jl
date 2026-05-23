@@ -1,4 +1,4 @@
-using RadiativeTransfer
+using IRSounderLBL
 using Printf
 using KernelAbstractions
 
@@ -7,8 +7,8 @@ using KernelAbstractions
     i = @index(Global, Linear)
     ν       = ν_grid[i]
     n_lines = length(lines_ν0)
-    j_lo = RadiativeTransfer._lower_bound(lines_ν0, ν - cutoff, n_lines)
-    j_hi = RadiativeTransfer._upper_bound(lines_ν0, ν + cutoff, n_lines)
+    j_lo = IRSounderLBL._lower_bound(lines_ν0, ν - cutoff, n_lines)
+    j_hi = IRSounderLBL._upper_bound(lines_ν0, ν + cutoff, n_lines)
     acc = 0.0
     ln2 = log(2.0)
     for j in j_lo:j_hi
@@ -17,7 +17,7 @@ using KernelAbstractions
         f  = sqrt(ln2) / gD
         x  = Δν * f
         y  = lines_γL[j] * f
-        H  = RadiativeTransfer.humlicek_voigt(x, y)
+        H  = IRSounderLBL.humlicek_voigt(x, y)
         acc += lines_S[j] * f * H / sqrt(π)
     end
     σ[i] = max(acc, 0.0)
@@ -31,9 +31,9 @@ function compute_voigt_orig(ν_grid, linelist, T, p_atm; cutoff=25.0)
     γL  = Vector{Float64}(undef, n_L)
     γD  = Vector{Float64}(undef, n_L)
     for (j, line) in enumerate(linelist.lines)
-        ν0[j] = RadiativeTransfer.pressure_shift(line, p_atm)
-        S[j]  = RadiativeTransfer.temperature_scaled_intensity(line, T)
-        gl, gd = RadiativeTransfer.pressure_broadened_width(line, p_atm, T)
+        ν0[j] = IRSounderLBL.pressure_shift(line, p_atm)
+        S[j]  = IRSounderLBL.temperature_scaled_intensity(line, T)
+        gl, gd = IRSounderLBL.pressure_broadened_width(line, p_atm, T)
         γL[j] = gl
         γD[j] = max(gd, 1e-10)
     end

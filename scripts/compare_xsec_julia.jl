@@ -6,7 +6,7 @@ Matches the layer conditions in compare_xsec_single_layer.py:
 Output: data/julia_xsec_h2o_layer.csv
 """
 
-using RadiativeTransfer
+using IRSounderLBL
 
 const T_K     = 255.0
 const P_HPA   = 500.0

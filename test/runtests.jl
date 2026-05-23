@@ -1,7 +1,7 @@
 using Test
-using RadiativeTransfer
+using IRSounderLBL
 
-@testset "RadiativeTransfer.jl" begin
+@testset "IRSounderLBL.jl" begin
 
     # ── WavenumberGrid ────────────────────────────────────────────────────
     @testset "WavenumberGrid" begin
@@ -316,9 +316,9 @@ using RadiativeTransfer
     end
 
     @testset "Line mixing — band_modes no-coupling limit" begin
-        RL = RadiativeTransfer.RelmatLine
-        RB = RadiativeTransfer.RelmatBand
-        WT = RadiativeTransfer.W0B0Table
+        RL = IRSounderLBL.RelmatLine
+        RB = IRSounderLBL.RelmatBand
+        WT = IRSounderLBL.W0B0Table
 
         # Two synthetic lines, isotopologue 1, identical broadening, separated by 10 cm⁻¹.
         # Empty WTfit table ⇒ no off-diagonal coupling ⇒ M = diag(ν₀ + i·p·γ_L).
@@ -331,7 +331,7 @@ using RadiativeTransfer
 
         T     = 296.0
         p_atm = 0.5
-        modes = RadiativeTransfer.band_modes(band, WT(), T, p_atm)
+        modes = IRSounderLBL.band_modes(band, WT(), T, p_atm)
 
         @test length(modes.poles) == 2
         @test length(modes.amplitudes) == 2
@@ -362,9 +362,9 @@ using RadiativeTransfer
 
     @testset "Line mixing — VP_W evaluator vs Voigt baseline (no coupling)" begin
         using SpecialFunctions: erfcx
-        RL = RadiativeTransfer.RelmatLine
-        RB = RadiativeTransfer.RelmatBand
-        WT = RadiativeTransfer.W0B0Table
+        RL = IRSounderLBL.RelmatLine
+        RB = IRSounderLBL.RelmatBand
+        WT = IRSounderLBL.W0B0Table
 
         # Two-line synthetic band, empty WTfit ⇒ M is diagonal.
         # Poles = ν₀ + i·p·γ_L exactly; amplitudes = S(T) exactly.
@@ -377,10 +377,10 @@ using RadiativeTransfer
 
         T     = 296.0
         p_atm = 0.5
-        modes = RadiativeTransfer.band_modes(band, WT(), T, p_atm)
+        modes = IRSounderLBL.band_modes(band, WT(), T, p_atm)
 
         ν_grid = wavenumber_grid(699.5, 700.5, 0.005)
-        σ_vpw  = RadiativeTransfer.compute_vpw_band_xsec(ν_grid, modes; cutoff=10.0)
+        σ_vpw  = IRSounderLBL.compute_vpw_band_xsec(ν_grid, modes; cutoff=10.0)
 
         # Reference: pure Voigt sum at band-uniform γ_D (same as modes.f)
         γ_L     = 0.07 * p_atm   # T = T_REF
@@ -402,7 +402,7 @@ using RadiativeTransfer
 
         # Cutoff sanity: poles outside the window contribute zero
         ν_far = wavenumber_grid(800.0, 800.5, 0.005)
-        σ_far = RadiativeTransfer.compute_vpw_band_xsec(ν_far, modes; cutoff=10.0)
+        σ_far = IRSounderLBL.compute_vpw_band_xsec(ν_far, modes; cutoff=10.0)
         @test all(==(0.0), σ_far)
     end
 

@@ -7,7 +7,7 @@
 #
 # Run:  julia --project -t auto scripts/probe_665_highres.jl
 
-using RadiativeTransfer
+using IRSounderLBL
 using Printf
 
 const NU_MIN  = 660.0

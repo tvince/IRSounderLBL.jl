@@ -1,6 +1,6 @@
 """Dump TIPS-2024 Q(T) for H2O and CO2 isotopologues to data/tips2024_qt.csv."""
 
-using RadiativeTransfer
+using IRSounderLBL
 
 OUT = joinpath(@__DIR__, "..", "data", "tips2024_qt.csv")
 
@@ -20,7 +20,7 @@ open(OUT, "w") do io
     println(io, "T,mol_id,iso_id,Q")
     for (mol, iso) in SPECIES
         for T in T_range
-            Q = RadiativeTransfer.partition_function(mol, iso, T)
+            Q = IRSounderLBL.partition_function(mol, iso, T)
             println(io, "$T,$mol,$iso,$Q")
         end
     end

@@ -11,7 +11,7 @@
 #   |Y·p|  — first-order Rosenkranz validity bound is ≲ 0.1
 #   S(T)·γ_L — to weight LM importance
 
-using RadiativeTransfer
+using IRSounderLBL
 using Printf
 
 const NU_LO = 664.5
@@ -38,7 +38,7 @@ println("Lines in $(NU_LO)–$(NU_HI) cm⁻¹ with |Y| > 0:")
         "band", "iso", "Ji", "br", "ν₀", "γ_air", "Y/atm", "Y·p", "S(T)")
 
 # `_calc_W_and_Y` is internal but `getfield` can pull it from the flat module.
-calc_W_and_Y = getfield(RadiativeTransfer, :_calc_W_and_Y)
+calc_W_and_Y = getfield(IRSounderLBL, :_calc_W_and_Y)
 
 big_Y = NamedTuple[]
 csv_rows = NamedTuple[]

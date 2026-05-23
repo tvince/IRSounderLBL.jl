@@ -12,7 +12,7 @@ Outputs:
   data/iasi_swath_edge_compare.csv   (ν, BT_nadir, BT_edge)
 """
 
-using RadiativeTransfer
+using IRSounderLBL
 using DelimitedFiles
 using Plots
 using Printf

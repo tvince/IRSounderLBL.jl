@@ -11,7 +11,7 @@
 #
 # Matching: by ν₀ to within 0.005 cm⁻¹ and same isotopologue.
 
-using RadiativeTransfer
+using IRSounderLBL
 using Printf
 
 const NU_MIN = 663.0

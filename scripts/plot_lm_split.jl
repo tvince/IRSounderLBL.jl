@@ -9,7 +9,7 @@ p=0.5 atm) — chosen to make Q(2,4,6) clip ON (typical IASI weighting region).
 Output: data/lm_split_diagnostic.png
 """
 
-using RadiativeTransfer
+using IRSounderLBL
 using Plots
 using Printf
 

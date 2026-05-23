@@ -9,7 +9,7 @@ Run with:
   HITRAN_API_KEY=<key> julia --project scripts/refetch_wide_margin.jl
 """
 
-using RadiativeTransfer
+using IRSounderLBL
 using Printf
 
 const NU_LO = 620.0   # 645 - 25

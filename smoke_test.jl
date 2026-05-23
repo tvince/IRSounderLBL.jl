@@ -1,4 +1,4 @@
-using RadiativeTransfer
+using IRSounderLBL
 
 println("Loading CO₂ lines from data/co2_645_700.par ...")
 ll = load_hitran_par("data/co2_645_700.par"; ν_min=645.0, ν_max=700.0)

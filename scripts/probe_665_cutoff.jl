@@ -12,7 +12,7 @@
 #
 # Run:  julia --project -t auto scripts/probe_665_cutoff.jl
 
-using RadiativeTransfer
+using IRSounderLBL
 using Printf
 
 const NU_MIN  = 663.0

@@ -1,4 +1,4 @@
-module RadiativeTransfer
+module IRSounderLBL
 
 # Utils
 include("Utils/wavenumber_grid.jl")
@@ -83,4 +83,4 @@ export iasi_forward_model
 # Parallel exports
 export ComputeBackend, detect_backend
 
-end # module RadiativeTransfer
+end # module IRSounderLBL
