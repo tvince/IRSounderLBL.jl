@@ -104,4 +104,4 @@ scripts/           validation drivers, ARTS comparison, plotting
 
 ## License
 
-TBD.
+MIT — see [LICENSE](LICENSE).
