@@ -6,7 +6,7 @@ IASI (Infrared Atmospheric Sounding Interferometer) on MetOp-A/B/C:
 - Spectral sampling: 0.25 cm⁻¹ (after apodization)
 - Number of channels: 8461
 - Native OPD: 2.0 cm (unapodized Δν = 0.25 cm⁻¹)
-- Apodization: Norton-Beer Medium
+- Apodization: Gaussian (IASI L1C convention; Norton-Beer available as option)
 - Pixel size at nadir: 12 km diameter (circular footprint)
 - Swath: ±48.33° (≈ 2200 km)
 """
@@ -66,7 +66,8 @@ end
                        high_res_factor=4,
                        cutoff=25.0,
                        apply_continuum=true,
-                       apply_ils=true,
+                       with_ils=true,
+                       apodization=:gaussian,
                        line_mixing=nothing,
                        backend=CPU()) -> (ν_iasi, R_iasi, BT_iasi)
 
@@ -82,7 +83,9 @@ Full IASI forward model: atmosphere → level optical depths → RTE → ILS →
 - `high_res_factor`:  internal spectral over-sampling relative to IASI Δν
 - `cutoff`:           Voigt wing cutoff (cm⁻¹)
 - `apply_continuum`:  include MT-CKD H₂O and CO₂ continua (default true)
-- `apply_ils`:        convolve with IASI Norton-Beer ILS before resampling (default true)
+- `with_ils`:         convolve with IASI ILS before resampling (default true)
+- `apodization`:      ILS apodization style: `:gaussian` (default, matches IASI L1C),
+                      `:norton_beer_weak`/`_medium`/`_strong` for alternative tapers
 - `line_mixing`:      CO2 line-mixing model, e.g. `VPYLineMixing(relmat)`; `nothing` (default) disables LM
 - `backend`:          compute backend
 
@@ -99,7 +102,8 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              high_res_factor::Int     = 4,
                              cutoff::Float64          = 25.0,
                              apply_continuum::Bool    = true,
-                             apply_ils::Bool          = true,
+                             with_ils::Bool           = true,
+                             apodization::Symbol      = :gaussian,
                              line_mixing::Union{Nothing, AbstractLineMixing} = nothing,
                              backend                  = CPU())
 
@@ -152,8 +156,9 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              μ=geom.μ, ε_sfc=ε_sfc)
 
     # ── 5. Apply IASI ILS (Norton-Beer apodization) ──────────────────────
-    if apply_ils
-        ils_δν, ils_kern = ils_kernel(Δν_hi, iasi.opd_max, iasi.fwhm_gauss)
+    if with_ils
+        ils_δν, ils_kern = ils_kernel(Δν_hi, iasi.opd_max, iasi.fwhm_gauss;
+                                      apodization=apodization)
         R_apod = apply_ils(ν_grid_hi, R_hi, ils_δν, ils_kern)
     else
         R_apod = R_hi

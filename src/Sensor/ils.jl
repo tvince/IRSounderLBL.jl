@@ -38,42 +38,57 @@ function norton_beer_apodization(x::Float64,
 end
 
 """
-    ils_kernel(Δν, opd_max, fwhm_gauss; n_pts=2048) -> (δν_arr, ils)
+    ils_kernel(Δν, opd_max, fwhm_gauss;
+               apodization=:gaussian, n_pts=2048) -> (δν_arr, ils)
 
-Compute the ILS as the Fourier transform of a Gaussian-tapered rectangular
-OPD window — i.e. the convolution of the natural sinc ILS with a Gaussian.
+Compute the ILS as the Fourier transform of an apodized rectangular OPD
+window.  Supports IASI-style Gaussian apodization (default) and the three
+Norton-Beer recipes.
 
 **Physical model**
 
-The unapodized FTS ILS is sinc(2π opd_max δν), whose Fourier transform is
-rect(L / opd_max).  Convolving with a Gaussian of width `fwhm_gauss` (cm⁻¹)
-is equivalent in the OPD domain to multiplying by a Gaussian envelope:
+The unapodized FTS ILS is sinc(2π opd_max δν).  In the OPD domain this
+corresponds to a rectangular window rect(L / opd_max).  Apodization is an
+additional taper A(L) applied inside the rectangle; the ILS is then
 
-    A_eff(L) = rect(L / opd_max) × exp(−2π² σ² L²)
-    σ = fwhm_gauss / (2 √(2 ln 2))
+    ILS(δν) = 2 ∫₀^L_max A(L) cos(2π L δν) dL.
 
-The ILS is then recovered by numerical integration:
+Apodization options:
 
-    ILS(δν) = 2 ∫₀^L_max A_eff(L) cos(2π L δν) dL
+- `:gaussian` (default) — IASI L1C convention.  A(L) = exp(−2π² σ² L²)
+  with σ = `fwhm_gauss` / (2 √(2 ln 2)).  Resulting ILS is sinc ⊗ Gaussian
+  with main-lobe FWHM ≈ `fwhm_gauss`.
+- `:norton_beer_weak` / `:norton_beer_medium` / `:norton_beer_strong` —
+  Norton & Beer (1976) polynomial taper.  A(L) = C0 + C2 (1−x²)² + C4 (1−x²)⁴
+  with x = L / `opd_max`.  Side-lobe-optimised; `fwhm_gauss` is ignored.
 
 # Arguments
-- `Δν`:         spectral grid spacing of the high-res internal grid (cm⁻¹)
-- `opd_max`:    maximum OPD (cm); for IASI = 2.0
-- `fwhm_gauss`: FWHM of the Gaussian broadening kernel (cm⁻¹); for IASI = 0.5
-- `n_pts`:      number of OPD quadrature points
+- `Δν`:           spectral grid spacing of the high-res internal grid (cm⁻¹)
+- `opd_max`:      maximum OPD (cm); for IASI = 2.0
+- `fwhm_gauss`:   FWHM of the Gaussian broadening kernel (cm⁻¹); for IASI = 0.5.
+                  Only used when `apodization=:gaussian`; pass any value
+                  for the Norton-Beer modes.
+- `apodization`:  apodization style (Symbol); default `:gaussian`
+- `n_pts`:        number of OPD quadrature points
 """
 function ils_kernel(Δν::Float64,
                     opd_max::Float64,
                     fwhm_gauss::Float64;
+                    apodization::Symbol = :gaussian,
                     n_pts::Int = 2048)
-    σ = fwhm_gauss / (2.0 * sqrt(2.0 * log(2.0)))   # Gaussian σ (cm⁻¹)
-
     # One-sided OPD quadrature grid
     opd = LinRange(0.0, opd_max, n_pts)
     dL  = opd_max / (n_pts - 1)
 
-    # Effective OPD apodization: Gaussian envelope × rectangular window
-    A = [exp(-2π^2 * σ^2 * L^2) for L in opd]
+    # OPD-domain apodization taper A(L)
+    A = if apodization === :gaussian
+        σ = fwhm_gauss / (2.0 * sqrt(2.0 * log(2.0)))   # Gaussian σ (cm⁻¹)
+        [exp(-2π^2 * σ^2 * L^2) for L in opd]
+    elseif haskey(NORTON_BEER_COEFFS, apodization)
+        [norton_beer_apodization(L / opd_max, apodization) for L in opd]
+    else
+        error("Unknown apodization $(apodization); expected :gaussian or one of $(collect(keys(NORTON_BEER_COEFFS)))")
+    end
 
     # Spectral offset grid: cover ±16 cm⁻¹ at Δν spacing
     n_half = ceil(Int, 16.0 / Δν)

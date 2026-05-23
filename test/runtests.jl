@@ -183,9 +183,9 @@ using RadiativeTransfer
         @test all(isapprox.(I_iso, B_iso; rtol=1e-6))
     end
 
-    # ── ILS (sinc ⊗ Gaussian) ─────────────────────────────────────────────
+    # ── ILS (sinc ⊗ Gaussian default; Norton-Beer optional) ───────────────
     @testset "ILS kernel" begin
-        # Kernel is area-normalised: ∑ kern × Δν ≈ 1
+        # Default kernel (Gaussian apodization) is area-normalised
         δν_arr, kern = ils_kernel(0.25, 2.0, 0.5)
         @test sum(kern) * 0.25 ≈ 1.0 rtol=1e-2
 
@@ -198,6 +198,26 @@ using RadiativeTransfer
         # High-res kernel also normalises correctly
         δν_hi, kern_hi = ils_kernel(0.0625, 2.0, 0.5)
         @test sum(kern_hi) * 0.0625 ≈ 1.0 rtol=1e-2
+
+        # Norton-Beer variants are area-normalised, symmetric, peak-centred
+        for style in (:norton_beer_weak, :norton_beer_medium, :norton_beer_strong)
+            δν_nb, kern_nb = ils_kernel(0.25, 2.0, 0.5; apodization=style)
+            @test sum(kern_nb) * 0.25 ≈ 1.0 rtol=1e-2
+            @test kern_nb ≈ reverse(kern_nb) rtol=1e-6
+            @test argmax(kern_nb) == (length(kern_nb) + 1) ÷ 2
+        end
+
+        # Default == :gaussian — passing the symbol explicitly matches the default
+        _, kern_def = ils_kernel(0.25, 2.0, 0.5)
+        _, kern_gau = ils_kernel(0.25, 2.0, 0.5; apodization=:gaussian)
+        @test kern_def ≈ kern_gau
+
+        # Gaussian and Norton-Beer Medium produce different kernels
+        _, kern_nbm = ils_kernel(0.25, 2.0, 0.5; apodization=:norton_beer_medium)
+        @test !(kern_def ≈ kern_nbm)
+
+        # Unknown apodization symbol errors
+        @test_throws ErrorException ils_kernel(0.25, 2.0, 0.5; apodization=:bogus)
     end
 
     # ── Norton-Beer (kept for reference) ──────────────────────────────────
