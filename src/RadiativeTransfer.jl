@@ -74,6 +74,7 @@ export schwarzschild_rte
 # Sensor exports
 export ViewingGeometry, airmass_factor
 export nadir_geometry, iasi_scan_angles
+export scan_angle_to_local_zenith, iasi_zenith_angles
 export IASIInstrument, iasi_grid
 export ils_kernel, apply_ils
 export NORTON_BEER_COEFFS, norton_beer_apodization

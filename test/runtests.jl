@@ -239,6 +239,19 @@ using RadiativeTransfer
         angles = iasi_scan_angles()
         @test length(angles) == 30
         @test maximum(abs.(angles)) ≈ 48.33 rtol=1e-2
+
+        # Scan angle → local zenith conversion (MetOp, h=817 km)
+        @test scan_angle_to_local_zenith(0.0) ≈ 0.0 atol=1e-12
+        @test scan_angle_to_local_zenith(48.33) ≈ 57.46 atol=0.05
+        @test scan_angle_to_local_zenith(-48.33) ≈ 57.46 atol=0.05  # symmetric
+
+        # Limb-violating angle should error
+        @test_throws ErrorException scan_angle_to_local_zenith(80.0)
+
+        zen = iasi_zenith_angles()
+        @test length(zen) == 30
+        @test all(abs.(zen) .> abs.(iasi_scan_angles()))   # local > scan everywhere off-nadir
+        @test zen[1] ≈ -zen[end] atol=1e-12                # antisymmetric across nadir
     end
 
     # ── MT-CKD Continuum ─────────────────────────────────────────────────
