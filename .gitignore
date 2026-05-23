@@ -1,4 +1,31 @@
+# macOS
 .DS_Store
+
+# Project artifacts (large or generated)
 *.png
 data/
+
+# Stray history files
 .Rhistory
+
+# Julia: code coverage
+*.jl.cov
+*.jl.*.cov
+
+# Julia: allocation tracking
+*.jl.mem
+
+# Julia: legacy BinDeps build artifacts
+deps/deps.jl
+deps/build.log
+deps/downloads/
+deps/usr/
+deps/src/
+
+# Julia: Documenter.jl output
+docs/build/
+docs/site/
+
+# Note: Manifest.toml is intentionally tracked to lock the dependency
+# snapshot behind the ARTS-validation results. Untrack once the package
+# is registered to General.
