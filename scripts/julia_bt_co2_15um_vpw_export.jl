@@ -68,7 +68,7 @@ t1 = time()
                                        high_res_factor = HRF,
                                        cutoff          = CUTOFF,
                                        apply_continuum = true,
-                                       apply_ils       = false,
+                                       with_ils        = false,
                                        line_mixing     = lm)
 @printf("  forward model: %.1f s\n", time() - t1)
 

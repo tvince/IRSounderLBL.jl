@@ -58,7 +58,7 @@ function run_case(label, cutoff)
                                    high_res_factor = HRF,
                                    cutoff          = Float64(cutoff),
                                    apply_continuum = true,
-                                   apply_ils       = false,
+                                   with_ils        = false,
                                    line_mixing     = VPYLineMixing(relmat))
     @printf("  %-15s forward model: %.1f s\n", label, time() - t1)
     return ν.ν, BT

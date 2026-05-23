@@ -11,7 +11,7 @@ Run with:
 using RadiativeTransfer
 using Printf
 
-const APPLY_ILS       = false
+const WITH_ILS        = false
 const APPLY_CONTINUUM = true
 const CUTOFF          = 25.0
 const HRF             = 4
@@ -52,7 +52,7 @@ t1 = time()
     high_res_factor  = HRF,
     cutoff           = CUTOFF,
     apply_continuum  = APPLY_CONTINUUM,
-    apply_ils        = APPLY_ILS)
+    with_ils         = WITH_ILS)
 @printf("  τ + RTE done in %.1f s\n", time() - t1)
 
 @printf("BT range: %.1f – %.1f K  (n=%d)\n",

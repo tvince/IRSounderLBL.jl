@@ -3,7 +3,7 @@ Export Julia BT for comparison with ARTS (arts_validation.py).
 
 Flags should match arts_validation.py:
   APPLY_CONTINUUM = false  ↔  APPLY_CONTINUUM = False in arts_validation.py
-  APPLY_ILS       = false  ↔  no sensor response in arts_validation.py
+  WITH_ILS        = false  ↔  no sensor response in arts_validation.py
 
 Output: data/julia_bt_645_800.csv  (nu_cm1, BT_K at 0.25 cm⁻¹ IASI grid)
 
@@ -14,7 +14,7 @@ Run with:
 using RadiativeTransfer
 using Printf
 
-const APPLY_ILS       = false
+const WITH_ILS        = false
 const APPLY_CONTINUUM = false
 const CUTOFF          = 25.0
 const HRF             = 4
@@ -58,7 +58,7 @@ t1 = time()
     high_res_factor  = HRF,
     cutoff           = CUTOFF,
     apply_continuum  = APPLY_CONTINUUM,
-    apply_ils        = APPLY_ILS)
+    with_ils         = WITH_ILS)
 @printf("  τ + RTE done in %.1f s\n", time() - t1)
 
 @printf("BT range: %.1f – %.1f K  (n=%d)\n",

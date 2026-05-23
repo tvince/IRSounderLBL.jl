@@ -96,7 +96,7 @@ for (label, lm) in (
                                    high_res_factor = HRF,
                                    cutoff          = CUTOFF,
                                    apply_continuum = true,
-                                   apply_ils       = false,
+                                   with_ils        = false,
                                    line_mixing     = lm)
     elapsed = time() - t1
     finite = all(isfinite, BT)

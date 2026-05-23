@@ -45,7 +45,7 @@ function run_case(label, lm; dnu_out=0.005, hrf=1)
                                    high_res_factor = hrf,
                                    cutoff          = CUTOFF,
                                    apply_continuum = true,
-                                   apply_ils       = false,
+                                   with_ils        = false,
                                    line_mixing     = lm)
     @printf("%-12s   %d channels @ %.3f cm⁻¹\n", label, length(BT), dnu_out)
     return ν.ν, BT
