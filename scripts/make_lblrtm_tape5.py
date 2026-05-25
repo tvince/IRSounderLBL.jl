@@ -95,7 +95,7 @@ def record_1_2(flags):
     return "".join(buf).rstrip()
 
 
-def build_tape5(profile, v1, v2, title, angle=180.0):
+def build_tape5(profile, v1, v2, title, angle=180.0, icntnm=1, cntscl=None):
     p_mb  = profile["p_hPa"]
     T_K   = profile["T_K"]
     z_km  = profile["z_km"]
@@ -113,7 +113,7 @@ def build_tape5(profile, v1, v2, title, angle=180.0):
     flags = dict(
         IHIRAC=1,    # Voigt
         ILBLF4=1,    # line-by-line bound 25 cm-1 (matches Julia cutoff)
-        ICNTNM=1,    # all continua (MT-CKD); Rayleigh negligible in the IR
+        ICNTNM=icntnm,  # 0=none, 1=all, 6=per-species scale factors (Record 1.2a)
         IAERSL=0,
         IEMIT=1,     # radiance + transmittance
         ISCAN=0,     # no instrument scan (no ILS), like with_ils=false
@@ -128,6 +128,11 @@ def build_tape5(profile, v1, v2, title, angle=180.0):
         MPTS=0, NPTS=0, ISOTPL=0, IBRD=0,
     )
     lines.append(record_1_2(flags))
+
+    # Record 1.2a — per-species continuum scale factors, read free-format when
+    # ICNTNM=6: XSELF XFRGN XCO2C XO3CN XO2CN XN2CN XRAYL.
+    if icntnm == 6:
+        lines.append(cntscl if cntscl else "0. 0. 1. 0. 0. 0. 0.")
 
     # Record 1.3 — V1, V2, SAMPLE, then defaults (zeros)
     lines.append(E10_3(v1) + E10_3(v2) + E10_3(4.0)
@@ -194,13 +199,18 @@ def main():
     ap.add_argument("--v2", type=float, default=800.0)
     ap.add_argument("--angle", type=float, default=180.0,
                     help="zenith ANGLE at H1 (Record 3.2); 180=nadir-down, 0=nadir-up")
+    ap.add_argument("--icntnm", type=int, default=1,
+                    help="continuum flag: 0=none, 1=all, 6=scale factors (Record 1.2a)")
+    ap.add_argument("--cntscl", default="0. 0. 1. 0. 0. 0. 0.",
+                    help="Record 1.2a when --icntnm 6: XSELF XFRGN XCO2C XO3CN XO2CN XN2CN XRAYL")
     ap.add_argument("--profile", default=os.path.join(DATA_DIR, "afgl_us_standard_50lev.csv"))
     ap.add_argument("-o", "--out", default=os.path.join(DATA_DIR, "lblrtm", "TAPE5"))
     ap.add_argument("--title", default="IRSounderLBL validation: AFGL US Std, CO2 15um, no LM")
     args = ap.parse_args()
 
     prof = load_profile(args.profile)
-    text = build_tape5(prof, args.v1, args.v2, args.title, angle=args.angle)
+    text = build_tape5(prof, args.v1, args.v2, args.title, angle=args.angle,
+                       icntnm=args.icntnm, cntscl=args.cntscl)
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:

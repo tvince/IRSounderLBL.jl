@@ -82,7 +82,10 @@ Full IASI forward model: atmosphere → level optical depths → RTE → ILS →
 - `ε_sfc`:            surface emissivity
 - `high_res_factor`:  internal spectral over-sampling relative to IASI Δν
 - `cutoff`:           Voigt wing cutoff (cm⁻¹)
-- `apply_continuum`:  include MT-CKD H₂O and CO₂ continua (default true)
+- `apply_continuum`:  master switch for continua (default true)
+- `continua`:         which continua to include when `apply_continuum`; any of
+                      `:h2o`, `:co2` (MT-CKD CO₂), `:co2_cia`, `:n2`, `:o2`
+                      (default all). E.g. `(:co2,)` isolates the MT-CKD CO₂ continuum.
 - `with_ils`:         convolve with IASI ILS before resampling (default true)
 - `apodization`:      ILS apodization style: `:gaussian` (default, matches IASI L1C),
                       `:norton_beer_weak`/`_medium`/`_strong` for alternative tapers
@@ -102,6 +105,7 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              high_res_factor::Int     = 4,
                              cutoff::Float64          = 25.0,
                              apply_continuum::Bool    = true,
+                             continua                 = (:h2o, :co2, :co2_cia, :n2, :o2),
                              with_ils::Bool           = true,
                              apodization::Symbol      = :gaussian,
                              line_mixing::Union{Nothing, AbstractLineMixing} = nothing,
@@ -142,12 +146,12 @@ function iasi_forward_model(prof::AtmosphericProfile,
             vmr_h2o = haskey(layers.vmr_mid, H2O) ? layers.vmr_mid[H2O][k] : 0.0
             vmr_co2 = haskey(layers.vmr_mid, CO2) ? layers.vmr_mid[CO2][k] : 4.15e-4
             dz_cm   = _dp_to_dz_cm(layers.Δp[k], layers.p_mid[k], layers.T_mid[k])
-            τ_layers[:, k] .+= h2o_continuum(ν_grid_hi, vmr_h2o, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
-            τ_layers[:, k] .+= co2_continuum(ν_grid_hi, vmr_co2, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
-            τ_layers[:, k] .+= co2_cia(ν_grid_hi, vmr_co2, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
             vmr_dry = 1.0 - vmr_h2o
-            τ_layers[:, k] .+= n2_cia(ν_grid_hi, 0.78084 * vmr_dry, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
-            τ_layers[:, k] .+= o2_cia(ν_grid_hi, 0.20946 * vmr_dry, layers.p_mid[k], layers.T_mid[k]) .* dz_cm
+            (:h2o     in continua) && (τ_layers[:, k] .+= h2o_continuum(ν_grid_hi, vmr_h2o, layers.p_mid[k], layers.T_mid[k]) .* dz_cm)
+            (:co2     in continua) && (τ_layers[:, k] .+= co2_continuum(ν_grid_hi, vmr_co2, layers.p_mid[k], layers.T_mid[k]) .* dz_cm)
+            (:co2_cia in continua) && (τ_layers[:, k] .+= co2_cia(ν_grid_hi, vmr_co2, layers.p_mid[k], layers.T_mid[k]) .* dz_cm)
+            (:n2      in continua) && (τ_layers[:, k] .+= n2_cia(ν_grid_hi, 0.78084 * vmr_dry, layers.p_mid[k], layers.T_mid[k]) .* dz_cm)
+            (:o2      in continua) && (τ_layers[:, k] .+= o2_cia(ν_grid_hi, 0.20946 * vmr_dry, layers.p_mid[k], layers.T_mid[k]) .* dz_cm)
         end
     end
 
