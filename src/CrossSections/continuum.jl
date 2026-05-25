@@ -20,10 +20,10 @@ CO₂ continuum (`co2_continuum`): MT-CKD line-coupling continuum (Hartmann; fro
   the CIA below, and the term that dominates the CO₂ ν₂ wings near 15 µm.
   Formula (contnm.f90 FRNCO2; RADFN and RHOAVE conventions match the H₂O path):
     rho_rat = (p/p_ref) × (T_ref/T)             [RHOAVE; p_ref=1013, T_ref=296]
-    k_CO₂   = S(ν) × 1e-20 × n_CO₂ × rho_rat × rad(ν,T)    [cm⁻¹]
-  NOTE: the 2000–2998 cm⁻¹ XFACCO2 scaling and the 2386–2434 cm⁻¹ bandhead
-  temperature correction are NOT yet applied — exact at 15 µm (645–800), not yet
-  validated in the 4.3 µm region.
+    k_CO₂   = S(ν) × xfac(ν) × (T/T_eff)^tdep(ν) × 1e-20 × n_CO₂ × rho_rat × rad(ν,T)
+  where xfac (XFACCO2, 2000–2998 cm⁻¹) and the bandhead temperature exponent
+  tdep (2386–2434 cm⁻¹, T_eff=246 K) are identity outside their ranges, so this
+  is valid across the full IASI range. All three tables come from contnm.f90.
 
 CO₂/N₂/O₂ CIA (`co2_cia`, `n2_cia`, `o2_cia`): HITRAN CIA tables
   (Karman et al. 2019, doi:10.1016/j.icarus.2019.02.034). Tabulated
@@ -77,21 +77,29 @@ const _CKD_CO2_CSV = joinpath(@__DIR__, "..", "..", "data", "mt_ckd_co2", "mt_ck
 
 function _load_ckd_co2_table()
     isfile(_CKD_CO2_CSV) || return nothing
-    nu_v = Float64[]
-    S_v  = Float64[]
+    nu_v   = Float64[]
+    Seff_v = Float64[]   # S × xfac: XFACCO2 (2000–2998) folded in on the coarse grid
+    tdep_v = Float64[]   # bandhead exponent (nonzero only on 2386–2434)
     open(_CKD_CO2_CSV) do f
-        readline(f)  # skip header
+        header = readline(f)
+        ncol = length(split(header, ','))
+        ncol == 4 || error("$_CKD_CO2_CSV has $ncol columns; expected 4 " *
+                           "(nu_cm1,S,xfac,tdep_exp). Regenerate with scripts/extract_ckd_co2.py.")
         for line in eachline(f)
             parts = split(line, ',')
-            push!(nu_v, parse(Float64, parts[1]))
-            push!(S_v,  parse(Float64, parts[2]))
+            push!(nu_v,   parse(Float64, parts[1]))
+            push!(Seff_v, parse(Float64, parts[2]) * parse(Float64, parts[3]))
+            push!(tdep_v, parse(Float64, parts[4]))
         end
     end
-    return linear_interpolation(nu_v, S_v, extrapolation_bc=Flat())
+    itp_S    = linear_interpolation(nu_v, Seff_v, extrapolation_bc=Flat())
+    itp_tdep = linear_interpolation(nu_v, tdep_v, extrapolation_bc=Flat())
+    return (itp_S, itp_tdep)
 end
 
 const _CKD_CO2 = _load_ckd_co2_table()
 const _CKD_CO2_WARNED = Ref(false)
+const _T_EFF = 246.0   # bandhead temperature-correction reference (contnm.f90 FRNCO2)
 
 # ── HITRAN CIA lookup tables ─────────────────────────────────────────────────
 
@@ -212,15 +220,15 @@ end
 MT-CKD CO₂ line-coupling continuum absorption coefficient [cm⁻¹] (Hartmann
 parameters, isotopes 1+2), from LBLRTM's tabulated S(ν):
 
-    k(ν) = S(ν) × 1e-20 × n_CO₂ × (p/p_ref)(T_ref/T) × rad(ν,T)
+    k(ν) = S(ν) × xfac(ν) × (T/T_eff)^tdep(ν) × 1e-20 × n_CO₂ × (p/p_ref)(T_ref/T) × rad(ν,T)
 
-This is the sub-Lorentzian far-wing residual the truncated-Voigt LBL omits;
-it dominates the CO₂ ν₂ band wings (≈690–750 cm⁻¹).
+where xfac and tdep are the XFACCO2 (2000–2998 cm⁻¹) and bandhead-temperature
+(2386–2434 cm⁻¹, T_eff=246 K) corrections, identity elsewhere. This is the
+sub-Lorentzian far-wing residual the truncated-Voigt LBL omits; it dominates the
+CO₂ ν₂ band wings (≈690–750 cm⁻¹).
 
 Returns zeros (with a one-time warning) if the coefficient table is absent;
-run `scripts/extract_ckd_co2.py` to regenerate it. The 2000–2998 cm⁻¹ XFACCO2
-scaling and 2386–2434 cm⁻¹ bandhead temperature correction are not yet applied
-(exact at 15 µm; see module docstring).
+run `scripts/extract_ckd_co2.py` to regenerate it.
 """
 function co2_continuum(ν_grid::WavenumberGrid,
                        vmr_co2::Float64,
@@ -235,13 +243,17 @@ function co2_continuum(ν_grid::WavenumberGrid,
         return zeros(Float64, ν_grid.n)
     end
 
+    itp_S, itp_tdep = _CKD_CO2
     rho_rat = (p_hPa / _P_REF) * (_T_REF / T)
     n_co2   = vmr_co2 * p_hPa * 100.0 / (_KB * T) * 1e-6  # molec/cm³
     pref    = 1e-20 * n_co2 * rho_rat
+    t_rat   = T / _T_EFF
 
     k = Vector{Float64}(undef, ν_grid.n)
     @inbounds for (i, ν) in enumerate(ν_grid.ν)
-        k[i] = _CKD_CO2(ν) * pref * _radfn(ν, T)
+        td   = itp_tdep(ν)                       # 0 except on the 2386–2434 bandhead
+        tcor = td == 0.0 ? 1.0 : t_rat^td
+        k[i] = itp_S(ν) * tcor * pref * _radfn(ν, T)
     end
     return k
 end

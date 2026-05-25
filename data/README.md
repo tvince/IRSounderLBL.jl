@@ -56,7 +56,7 @@ are derived for runtime convenience.
 | --- | --- |
 | `ckd_mt350_coeffs.csv` (regenerate as needed) | `scripts/extract_ckd_coeffs.py` |
 | (MT-CKD 4.3 csv) | `scripts/extract_ckd43_csv.py` |
-| `mt_ckd_co2/mt_ckd_co2_coeffs.csv` (CO₂ line-coupling continuum, used by `co2_continuum`) | `scripts/extract_ckd_co2.py` — parses LBLRTM `contnm.f90` BLOCK DATA BFCO2 (5003 pts, V1=−4/DV=2; byte-identical to AER-RC/LBLRTM master) |
+| `mt_ckd_co2/mt_ckd_co2_coeffs.csv` (CO₂ line-coupling continuum, used by `co2_continuum`) | `scripts/extract_ckd_co2.py` — parses LBLRTM `contnm.f90` BLOCK DATA BFCO2 (5003 pts, V1=−4/DV=2; byte-identical to AER-RC/LBLRTM master). Columns `nu_cm1,S,xfac,tdep_exp`: also pulls the XFACCO2 (2000–2998) and bandhead-temperature (2386–2434) corrections, making the term valid across the full IASI range. |
 
 ### LBLRTM validation (15 µm CO₂, native gfortran-12 build)
 TAPE5/TAPE12 round-trip vs Julia; cont-ON RMS 0.081 K. Needs the LBLRTM

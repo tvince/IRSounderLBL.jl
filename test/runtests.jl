@@ -297,6 +297,25 @@ using IRSounderLBL
         idx_700 = argmin(abs.(g.ν .- 700.0))
         idx_790 = argmin(abs.(g.ν .- 790.0))
         @test k_co2[idx_700] > k_co2[idx_790] > 0
+
+        # Bandhead temperature correction (2386–2434 cm⁻¹): the continuum gets
+        # an extra (T/246)^tdep factor there (tdep=0.73 at 2400), and none at
+        # 15 µm (tdep=0). Isolate it with a cross-T ratio so S·xfac cancel;
+        # divide out the density (∝1/T²) and radiation-field temperature
+        # dependence that the base formula also carries.
+        T1, T2 = 296.0, 246.0
+        k1 = co2_continuum(g, 4.15e-4, 1013.25, T1)
+        k2 = co2_continuum(g, 4.15e-4, 1013.25, T2)
+        _rad(ν, T) = (x = 1.4387769 * ν / T; ν * (1 - exp(-x)) / (1 + exp(-x)))
+        _base(ν, T) = _rad(ν, T) / T^2
+        i2400 = argmin(abs.(g.ν .- 2400.0))
+        r_bh = (k1[i2400] / _base(g.ν[i2400], T1)) /
+               (k2[i2400] / _base(g.ν[i2400], T2))
+        @test r_bh ≈ (T1 / T2)^0.73 rtol = 1e-3
+        i714 = argmin(abs.(g.ν .- 714.0))
+        r_15 = (k1[i714] / _base(g.ν[i714], T1)) /
+               (k2[i714] / _base(g.ν[i714], T2))
+        @test r_15 ≈ 1.0 rtol = 1e-3
     end
 
     # ── Transmittance ─────────────────────────────────────────────────────
