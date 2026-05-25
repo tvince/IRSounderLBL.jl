@@ -56,7 +56,7 @@ export pressure_broadened_width, temperature_scaled_intensity, pressure_shift
 export VoigtMethod, Weideman, PseudoVoigt, FullFaddeeva
 export weideman_voigt, faddeeva_voigt, pseudo_voigt_profile
 export voigt_profile, compute_voigt_cross_sections
-export h2o_continuum, co2_continuum, n2_continuum, o2_continuum
+export h2o_continuum, co2_continuum, co2_cia, n2_cia, o2_cia
 export layer_optical_depth
 export RelmatLine, RelmatBand, HITRANRelmatData
 export load_hitran_relmat, compute_voigt_lm_cross_sections,

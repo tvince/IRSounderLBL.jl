@@ -16,9 +16,9 @@ as a map; regenerate anything missing rather than checking it in.
 | `mt_ckd_h2o/` | MT-CKD 4.3 H₂O continuum tables (AER). |
 | `tips/` | TIPS-2024 raw tables. |
 | `Line-mixing_HITRAN2020/` | Lamouroux/HITRAN line-mixing data + Fortran reference. |
-| `cia/CO2-CO2_2024.cia` | HITRAN CIA (Karman et al. 2019, 2024 update). Download from hitran.org/cia/ → CO2-CO2 → latest record. Used by `co2_continuum`. |
-| `cia/N2-N2_2021.cia`   | HITRAN CIA, N₂–N₂ homogeneous pair. Used by `n2_continuum`. |
-| `cia/O2-O2_2024.cia`   | HITRAN CIA, O₂–O₂ homogeneous pair. Used by `o2_continuum`. |
+| `cia/CO2-CO2_2024.cia` | HITRAN CIA (Karman et al. 2019, 2024 update). Download from hitran.org/cia/ → CO2-CO2 → latest record. Used by `co2_cia`. |
+| `cia/N2-N2_2021.cia`   | HITRAN CIA, N₂–N₂ homogeneous pair. Used by `n2_cia`. |
+| `cia/O2-O2_2024.cia`   | HITRAN CIA, O₂–O₂ homogeneous pair. Used by `o2_cia`. |
 | `standard_atmospheres/` | AFGL standard atmospheres (raw). |
 
 ## Repo-tracked seeds (pre-prepared inputs, not generated)
@@ -56,6 +56,17 @@ are derived for runtime convenience.
 | --- | --- |
 | `ckd_mt350_coeffs.csv` (regenerate as needed) | `scripts/extract_ckd_coeffs.py` |
 | (MT-CKD 4.3 csv) | `scripts/extract_ckd43_csv.py` |
+| `mt_ckd_co2/mt_ckd_co2_coeffs.csv` (CO₂ line-coupling continuum, used by `co2_continuum`) | `scripts/extract_ckd_co2.py` — parses LBLRTM `contnm.f90` BLOCK DATA BFCO2 (5003 pts, V1=−4/DV=2; byte-identical to AER-RC/LBLRTM master) |
+
+### LBLRTM validation (15 µm CO₂, native gfortran-12 build)
+TAPE5/TAPE12 round-trip vs Julia; cont-ON RMS 0.081 K. Needs the LBLRTM
+build in `~/LBLRTM_build` (see project notes).
+| File | Script |
+| --- | --- |
+| `lblrtm/TAPE5` | `scripts/make_lblrtm_tape5.py` (fixed-format TAPE5 from the AFGL profile) |
+| `lblrtm/lblrtm_bt_cont{OFF,ON}_g12.csv` | `scripts/read_lblrtm_tape12.py` (decodes the binary TAPE12 panels) |
+| `lblrtm/julia_bt_cont{OFF,ON}.csv` | `scripts/julia_bt_lblrtm_compare_export.jl` |
+| `lblrtm/julia_lblrtm_compare.png` | `scripts/compare_julia_lblrtm.py` |
 
 ### ARTS issue #1130 reproducer artifacts (15 µm CO₂ Y bug)
 Cited in `ARTS_BUG_REPORT.md` / GitHub issue #1130.

@@ -281,14 +281,22 @@ using IRSounderLBL
         @test length(k_h2o) == g.n
         @test all(k_h2o .>= 0)
 
+        # CO₂ CIA (HITRAN) should peak in the 1200-1500 cm⁻¹ window
+        k_co2_cia = co2_cia(g, 4.15e-4, 1013.25, 296.0)
+        @test length(k_co2_cia) == g.n
+        @test all(k_co2_cia .>= 0)
+        idx_1350 = argmin(abs.(g.ν .- 1350.0))
+        idx_2000 = argmin(abs.(g.ν .- 2000.0))
+        @test k_co2_cia[idx_1350] > k_co2_cia[idx_2000]
+
+        # MT-CKD CO₂ continuum: positive, and decays from the ν₂ band toward
+        # the window (S peaks near band center).
         k_co2 = co2_continuum(g, 4.15e-4, 1013.25, 296.0)
         @test length(k_co2) == g.n
         @test all(k_co2 .>= 0)
-
-        # CO2 CIA should peak in the 1200-1500 cm⁻¹ window
-        idx_1350 = argmin(abs.(g.ν .- 1350.0))
-        idx_2000 = argmin(abs.(g.ν .- 2000.0))
-        @test k_co2[idx_1350] > k_co2[idx_2000]
+        idx_700 = argmin(abs.(g.ν .- 700.0))
+        idx_790 = argmin(abs.(g.ν .- 790.0))
+        @test k_co2[idx_700] > k_co2[idx_790] > 0
     end
 
     # ── Transmittance ─────────────────────────────────────────────────────

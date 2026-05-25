@@ -110,7 +110,7 @@ for (ic, ν_lo) in enumerate(chunk_starts)
         vmr_h2o = layers.vmr_mid[H2O][k]
         vmr_co2 = layers.vmr_mid[CO2][k]
         cont_h2o = h2o_continuum(chunk_grid, vmr_h2o, layers.p_mid[k], T_k) .* dz
-        cont_co2 = co2_continuum(chunk_grid, vmr_co2, layers.p_mid[k], T_k) .* dz
+        cont_co2 = co2_cia(chunk_grid, vmr_co2, layers.p_mid[k], T_k) .* dz
         τ_w[i1:i2, k] .+= cont_h2o .+ cont_co2
         τ_f[i1:i2, k] .+= cont_h2o .+ cont_co2
     end

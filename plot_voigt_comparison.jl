@@ -117,7 +117,7 @@ function run_forward_model(method::VoigtMethod)
             vmr_h2o = layers.vmr_mid[H2O][k]
             vmr_co2 = layers.vmr_mid[CO2][k]
             τ[i1:i2, k] .+= h2o_continuum(chunk_grid, vmr_h2o, layers.p_mid[k], T_k) .* dz
-            τ[i1:i2, k] .+= co2_continuum(chunk_grid, vmr_co2, layers.p_mid[k], T_k) .* dz
+            τ[i1:i2, k] .+= co2_cia(chunk_grid, vmr_co2, layers.p_mid[k], T_k) .* dz
         end
 
         elapsed = round(time() - t0; digits=1)

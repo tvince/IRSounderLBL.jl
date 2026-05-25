@@ -34,7 +34,7 @@ function toy_co2_continuum(ν_grid, vmr_co2, p_hPa, T)
 end
 
 ν   = wavenumber_grid(NU_MIN, NU_MAX, DNU)
-new = co2_continuum(ν, VMR, P_HPA, T)
+new = co2_cia(ν, VMR, P_HPA, T)
 old = toy_co2_continuum(ν, VMR, P_HPA, T)
 
 # Plot in log10 of k+ε for visibility; mark zero regions

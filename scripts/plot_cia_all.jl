@@ -16,9 +16,9 @@ const T      = 296.0
 const P_HPA  = 1013.25
 
 ν     = wavenumber_grid(NU_MIN, NU_MAX, DNU)
-k_co2 = co2_continuum(ν, 4.15e-4, P_HPA, T)
-k_n2  = n2_continuum(ν,  0.78084, P_HPA, T)
-k_o2  = o2_continuum(ν,  0.20946, P_HPA, T)
+k_co2 = co2_cia(ν, 4.15e-4, P_HPA, T)
+k_n2  = n2_cia(ν,  0.78084, P_HPA, T)
+k_o2  = o2_cia(ν,  0.20946, P_HPA, T)
 
 ε = 1e-15
 plt = plot(ν.ν, k_n2  .+ ε, yscale=:log10, label="N₂–N₂", lw=1.5, color=:steelblue,

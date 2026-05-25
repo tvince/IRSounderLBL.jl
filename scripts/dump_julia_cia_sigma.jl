@@ -23,9 +23,9 @@ const VMR_O2  = 0.20946 * (1.0 - VMR_H2O)
 const NU = collect(2000.0:0.5:2700.0)
 grid = wavenumber_grid(2000.0, 2700.0, 0.5)
 
-k_co2 = co2_continuum(grid, VMR_CO2, P_HPA, T_K)
-k_n2  = n2_continuum( grid, VMR_N2,  P_HPA, T_K)
-k_o2  = o2_continuum( grid, VMR_O2,  P_HPA, T_K)
+k_co2 = co2_cia(grid, VMR_CO2, P_HPA, T_K)
+k_n2  = n2_cia( grid, VMR_N2,  P_HPA, T_K)
+k_o2  = o2_cia( grid, VMR_O2,  P_HPA, T_K)
 
 i_peak = argmin(abs.(NU .- 2331.0))
 @printf "At ν = %.1f cm⁻¹ (N2 fundamental peak), T=%.1f K, p=%.1f hPa:\n" NU[i_peak] T_K P_HPA

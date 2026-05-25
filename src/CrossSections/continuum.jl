@@ -13,13 +13,26 @@ H₂O: MT-CKD 4.3 continuum (Mlawer et al. 2012, doi:10.1098/rsta.2011.0295).
     k_for    = Cf(ν)              × (1−vmr) × rho_rat × rad × n_H₂O
     k_cont   = k_self + k_for                      [cm⁻¹]
 
-CO₂, N₂, O₂: HITRAN CIA tables (Karman et al. 2019, doi:10.1016/j.icarus.2019.02.034).
-  Tabulated collision-induced cross sections σ(ν, T) [cm⁵/molec²] read from
+CO₂ continuum (`co2_continuum`): MT-CKD line-coupling continuum (Hartmann; from
+  LBLRTM contnm.f90 BLOCK DATA BFCO2). Tabulated coefficient S(ν) read from
+  data/mt_ckd_co2/mt_ckd_co2_coeffs.csv. This is the sub-Lorentzian far-wing /
+  line-coupling residual the truncated-Voigt LBL omits — physically distinct from
+  the CIA below, and the term that dominates the CO₂ ν₂ wings near 15 µm.
+  Formula (contnm.f90 FRNCO2; RADFN and RHOAVE conventions match the H₂O path):
+    rho_rat = (p/p_ref) × (T_ref/T)             [RHOAVE; p_ref=1013, T_ref=296]
+    k_CO₂   = S(ν) × 1e-20 × n_CO₂ × rho_rat × rad(ν,T)    [cm⁻¹]
+  NOTE: the 2000–2998 cm⁻¹ XFACCO2 scaling and the 2386–2434 cm⁻¹ bandhead
+  temperature correction are NOT yet applied — exact at 15 µm (645–800), not yet
+  validated in the 4.3 µm region.
+
+CO₂/N₂/O₂ CIA (`co2_cia`, `n2_cia`, `o2_cia`): HITRAN CIA tables
+  (Karman et al. 2019, doi:10.1016/j.icarus.2019.02.034). Tabulated
+  collision-induced cross sections σ(ν, T) [cm⁵/molec²] read from
   data/cia/{CO2-CO2_2024,N2-N2_2021,O2-O2_2024}.cia.
   Scaling:
-    k_CO₂ = σ_CO₂-CO₂(ν,T) × n_CO₂ × n_air     (scaled-to-air approximation)
-    k_N₂  = σ_N₂-N₂(ν,T)   × n_N₂²              (homogeneous)
-    k_O₂  = σ_O₂-O₂(ν,T)   × n_O₂²              (homogeneous)
+    k_CO₂ = σ_CO₂-CO₂(ν,T) × n_CO₂ × n_air     (co2_cia; scaled-to-air approx)
+    k_N₂  = σ_N₂-N₂(ν,T)   × n_N₂²              (n2_cia; homogeneous)
+    k_O₂  = σ_O₂-O₂(ν,T)   × n_O₂²              (o2_cia; homogeneous)
 """
 
 const _KB      = 1.380649e-23   # J/K
@@ -55,6 +68,30 @@ function _load_ckd_table()
 end
 
 const _CKD = _load_ckd_table()
+
+# ── MT-CKD CO₂ continuum table (Hartmann line-coupling; from contnm.f90) ─────
+# Single coefficient S(ν) on a 2 cm⁻¹ grid (−4 … 10000 cm⁻¹). Extracted from
+# LBLRTM's BLOCK DATA BFCO2 by scripts/extract_ckd_co2.py.
+
+const _CKD_CO2_CSV = joinpath(@__DIR__, "..", "..", "data", "mt_ckd_co2", "mt_ckd_co2_coeffs.csv")
+
+function _load_ckd_co2_table()
+    isfile(_CKD_CO2_CSV) || return nothing
+    nu_v = Float64[]
+    S_v  = Float64[]
+    open(_CKD_CO2_CSV) do f
+        readline(f)  # skip header
+        for line in eachline(f)
+            parts = split(line, ',')
+            push!(nu_v, parse(Float64, parts[1]))
+            push!(S_v,  parse(Float64, parts[2]))
+        end
+    end
+    return linear_interpolation(nu_v, S_v, extrapolation_bc=Flat())
+end
+
+const _CKD_CO2 = _load_ckd_co2_table()
+const _CKD_CO2_WARNED = Ref(false)
 
 # ── HITRAN CIA lookup tables ─────────────────────────────────────────────────
 
@@ -172,21 +209,62 @@ end
 """
     co2_continuum(ν_grid, vmr_co2, p_hPa, T) -> Vector{Float64}
 
-CO₂ collision-induced absorption continuum [cm⁻¹] from HITRAN CIA
-(CO₂–CO₂, Karman et al. 2019), scaled by `n_CO₂ × n_air` so CO₂–N₂/O₂
-collisions are treated as equivalent to CO₂–CO₂.
+MT-CKD CO₂ line-coupling continuum absorption coefficient [cm⁻¹] (Hartmann
+parameters, isotopes 1+2), from LBLRTM's tabulated S(ν):
 
-Returns zeros (with a one-time warning) if `data/cia/CO2-CO2_2024.cia` is
-absent. T outside the table's range is clamped; ν outside the table's range
-contributes zero.
+    k(ν) = S(ν) × 1e-20 × n_CO₂ × (p/p_ref)(T_ref/T) × rad(ν,T)
+
+This is the sub-Lorentzian far-wing residual the truncated-Voigt LBL omits;
+it dominates the CO₂ ν₂ band wings (≈690–750 cm⁻¹).
+
+Returns zeros (with a one-time warning) if the coefficient table is absent;
+run `scripts/extract_ckd_co2.py` to regenerate it. The 2000–2998 cm⁻¹ XFACCO2
+scaling and 2386–2434 cm⁻¹ bandhead temperature correction are not yet applied
+(exact at 15 µm; see module docstring).
 """
 function co2_continuum(ν_grid::WavenumberGrid,
                        vmr_co2::Float64,
                        p_hPa::Float64,
                        T::Float64)::Vector{Float64}
+    if _CKD_CO2 === nothing
+        if !_CKD_CO2_WARNED[]
+            @warn "MT-CKD CO₂ coefficient table not found at $_CKD_CO2_CSV; co2_continuum returns zeros. " *
+                  "Run scripts/extract_ckd_co2.py to generate it."
+            _CKD_CO2_WARNED[] = true
+        end
+        return zeros(Float64, ν_grid.n)
+    end
+
+    rho_rat = (p_hPa / _P_REF) * (_T_REF / T)
+    n_co2   = vmr_co2 * p_hPa * 100.0 / (_KB * T) * 1e-6  # molec/cm³
+    pref    = 1e-20 * n_co2 * rho_rat
+
+    k = Vector{Float64}(undef, ν_grid.n)
+    @inbounds for (i, ν) in enumerate(ν_grid.ν)
+        k[i] = _CKD_CO2(ν) * pref * _radfn(ν, T)
+    end
+    return k
+end
+
+"""
+    co2_cia(ν_grid, vmr_co2, p_hPa, T) -> Vector{Float64}
+
+CO₂ collision-induced absorption [cm⁻¹] from HITRAN CIA (CO₂–CO₂,
+Karman et al. 2019), scaled by `n_CO₂ × n_air` so CO₂–N₂/O₂ collisions are
+treated as equivalent to CO₂–CO₂. Distinct from `co2_continuum` (MT-CKD
+line-coupling continuum); near-zero at 15 µm.
+
+Returns zeros (with a one-time warning) if `data/cia/CO2-CO2_2024.cia` is
+absent. T outside the table's range is clamped; ν outside the table's range
+contributes zero.
+"""
+function co2_cia(ν_grid::WavenumberGrid,
+                 vmr_co2::Float64,
+                 p_hPa::Float64,
+                 T::Float64)::Vector{Float64}
     if _CIA_CO2 === nothing
         if !_CIA_CO2_WARNED[]
-            @warn "HITRAN CO₂–CO₂ CIA table not found at $_CIA_CO2_FILE; co2_continuum returns zeros. " *
+            @warn "HITRAN CO₂–CO₂ CIA table not found at $_CIA_CO2_FILE; co2_cia returns zeros. " *
                   "Download CO2-CO2_2024.cia from hitran.org/cia/ to enable."
             _CIA_CO2_WARNED[] = true
         end
@@ -205,19 +283,19 @@ function co2_continuum(ν_grid::WavenumberGrid,
 end
 
 """
-    n2_continuum(ν_grid, vmr_n2, p_hPa, T) -> Vector{Float64}
+    n2_cia(ν_grid, vmr_n2, p_hPa, T) -> Vector{Float64}
 
-N₂–N₂ collision-induced absorption continuum [cm⁻¹] from HITRAN CIA
-(homogeneous pair, scaled by `n_N₂²`). Dominates the 4 µm region around
-2400 cm⁻¹ for atmospheric conditions.
+N₂–N₂ collision-induced absorption [cm⁻¹] from HITRAN CIA (homogeneous pair,
+scaled by `n_N₂²`). Dominates the 4 µm region around 2400 cm⁻¹ for
+atmospheric conditions.
 """
-function n2_continuum(ν_grid::WavenumberGrid,
-                      vmr_n2::Float64,
-                      p_hPa::Float64,
-                      T::Float64)::Vector{Float64}
+function n2_cia(ν_grid::WavenumberGrid,
+                vmr_n2::Float64,
+                p_hPa::Float64,
+                T::Float64)::Vector{Float64}
     if _CIA_N2 === nothing
         if !_CIA_N2_WARNED[]
-            @warn "HITRAN N₂–N₂ CIA table not found at $_CIA_N2_FILE; n2_continuum returns zeros. " *
+            @warn "HITRAN N₂–N₂ CIA table not found at $_CIA_N2_FILE; n2_cia returns zeros. " *
                   "Download N2-N2_2021.cia from hitran.org/cia/ to enable."
             _CIA_N2_WARNED[] = true
         end
@@ -233,19 +311,19 @@ function n2_continuum(ν_grid::WavenumberGrid,
 end
 
 """
-    o2_continuum(ν_grid, vmr_o2, p_hPa, T) -> Vector{Float64}
+    o2_cia(ν_grid, vmr_o2, p_hPa, T) -> Vector{Float64}
 
-O₂–O₂ collision-induced absorption continuum [cm⁻¹] from HITRAN CIA
-(homogeneous pair, scaled by `n_O₂²`). Dominates around 1556 cm⁻¹
-(O₂ fundamental) — overlaps the H₂O ν₂ band.
+O₂–O₂ collision-induced absorption [cm⁻¹] from HITRAN CIA (homogeneous pair,
+scaled by `n_O₂²`). Dominates around 1556 cm⁻¹ (O₂ fundamental) — overlaps
+the H₂O ν₂ band.
 """
-function o2_continuum(ν_grid::WavenumberGrid,
-                      vmr_o2::Float64,
-                      p_hPa::Float64,
-                      T::Float64)::Vector{Float64}
+function o2_cia(ν_grid::WavenumberGrid,
+                vmr_o2::Float64,
+                p_hPa::Float64,
+                T::Float64)::Vector{Float64}
     if _CIA_O2 === nothing
         if !_CIA_O2_WARNED[]
-            @warn "HITRAN O₂–O₂ CIA table not found at $_CIA_O2_FILE; o2_continuum returns zeros. " *
+            @warn "HITRAN O₂–O₂ CIA table not found at $_CIA_O2_FILE; o2_cia returns zeros. " *
                   "Download O2-O2_2024.cia from hitran.org/cia/ to enable."
             _CIA_O2_WARNED[] = true
         end
