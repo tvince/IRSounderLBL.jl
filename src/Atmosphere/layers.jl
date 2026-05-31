@@ -72,9 +72,54 @@ function cg_pressure(v1::Float64, v2::Float64, p1::Float64, p2::Float64)::Float6
 end
 
 """
-    layer_properties(prof)
+    cg_temperature_mass(T1, T2, p1, p2) -> Float64
+
+Mass-weighted layer T = ∫ T(p) dp / |Δp| under the assumption that T varies
+linearly with log(p) between (p1, T1) and (p2, T2). Closed form:
+
+    frac = [(α - 1)·β + 1] / [α·(β - 1)],   α = log(p2/p1), β = p2/p1
+    T_mass = T1 + (T2 - T1)·frac
+
+This is the convention LBLRTM's LBLATM uses for the per-layer effective T
+(printed as TBAR in TAPE6), which differs from Julia's default `cg_pressure +
+T(p_cg)` recipe by the curvature of T(log p) within the layer. The two agree
+to leading order in α; they diverge for thick layers with steep T gradient,
+producing a sign-flipping offset around the stratopause/mesopause turning
+points where T(z) has an extremum.
+
+For |α| < 1e-3 (thin layer), uses the Taylor series  frac ≈ 1/2 + α/12 to
+avoid catastrophic cancellation in (β − 1).
+"""
+function cg_temperature_mass(T1::Float64, T2::Float64,
+                              p1::Float64, p2::Float64)::Float64
+    T1 ≈ T2 && return T1
+    p1 ≈ p2 && return 0.5 * (T1 + T2)
+    α = log(p2 / p1)
+    if abs(α) < 1e-3
+        # Series: frac = 1/2 + α/12 + O(α³)
+        frac = 0.5 + α / 12.0
+    else
+        β = p2 / p1
+        frac = ((α - 1.0) * β + 1.0) / (α * (β - 1.0))
+    end
+    return T1 + (T2 - T1) * frac
+end
+
+"""
+    layer_properties(prof; T_method=:logp_at_pcg)
 
 Compute layer properties from an `AtmosphericProfile` for the Schwarzschild RTE.
+
+# Keyword arguments
+- `T_method`: how to compute the per-layer effective temperature for LBL
+  cross-section evaluation.
+  - `:logp_at_pcg`  (default): T linearly interpolated in log(p) at the
+                    Curtis-Godson pressure p_cg. Optimal single-point quadrature
+                    for a power-law VMR(p) profile.
+  - `:mass_weighted`: mass-weighted layer T = ∫T dp / Δp (LBLATM convention,
+                    matches the TBAR printed in LBLRTM TAPE6). Better for
+                    layers with strong T gradient relative to the level spacing
+                    (e.g., upper-stratosphere/mesosphere with 5 km layers).
 
 Returns a NamedTuple with:
 - `p_mid`:   arithmetic mid-layer pressure (hPa) — for continuum, dz, Planck function
@@ -83,22 +128,31 @@ Returns a NamedTuple with:
 - `vmr_mid`: Dict of linearly-interpolated mid-layer VMRs — for continuum absorption
 - `vmr_cg`:  Dict of Curtis-Godson effective VMRs — for LBL column amounts
 - `p_cg`:    Dict of CG pressure-weighted pressures (hPa) — for LBL cross-section evaluation
-- `T_cg`:    Dict of temperatures at `p_cg` (K) — for LBL cross-section evaluation
-
-The CG fields use the exact column integral of an assumed power-law VMR profile
-between level boundaries, giving the optimal single-point quadrature for each layer.
+- `T_cg`:    Dict of effective temperatures (K) per the `T_method` choice
 """
-function layer_properties(prof::AtmosphericProfile)
+function layer_properties(prof::AtmosphericProfile; T_method::Symbol = :logp_at_pcg)
+    T_method in (:logp_at_pcg, :mass_weighted) ||
+        error("T_method must be :logp_at_pcg or :mass_weighted, got :$T_method")
+
     p_lev = prof.pressure          # level pressures (n_lev)
+    T_lev = prof.temperature
     n_lay = length(p_lev) - 1
 
     p_mid, Δp = pressure_layers(p_lev)
-    T_mid = interp_profile(p_lev, prof.temperature, p_mid)
+    T_mid = interp_profile(p_lev, T_lev, p_mid)
 
     # Linear-interpolated VMR at arithmetic mid-layer (for continuum etc.)
     vmr_mid = Dict{GasSpecies, Vector{Float64}}()
     for (sp, vmr) in prof.vmr
         vmr_mid[sp] = interp_vmr(p_lev, vmr, p_mid)
+    end
+
+    # Mass-weighted T per layer is gas-independent — precompute once.
+    T_mass = if T_method == :mass_weighted
+        [cg_temperature_mass(T_lev[k], T_lev[k+1], p_lev[k], p_lev[k+1])
+         for k in 1:n_lay]
+    else
+        nothing
     end
 
     # Curtis-Godson effective VMR and pressure per species
@@ -114,7 +168,8 @@ function layer_properties(prof::AtmosphericProfile)
         end
         vmr_cg[sp] = vc
         p_cg[sp]   = pc
-        T_cg[sp]   = interp_profile(p_lev, prof.temperature, pc)
+        T_cg[sp]   = T_method == :mass_weighted ? copy(T_mass) :
+                     interp_profile(p_lev, T_lev, pc)
     end
 
     return (p_mid=p_mid, T_mid=T_mid, Δp=Δp,

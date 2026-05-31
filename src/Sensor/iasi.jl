@@ -109,6 +109,8 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              with_ils::Bool           = true,
                              apodization::Symbol      = :gaussian,
                              line_mixing::Union{Nothing, AbstractLineMixing} = nothing,
+                             T_method::Symbol         = :logp_at_pcg,
+                             source_function::Symbol  = :toon,
                              backend                  = CPU())
 
     # ── 1. High-resolution internal grid ────────────────────────────────
@@ -116,7 +118,7 @@ function iasi_forward_model(prof::AtmosphericProfile,
     ν_grid_hi = wavenumber_grid(iasi.ν_min, iasi.ν_max, Δν_hi)
 
     # ── 2. Compute layer properties ──────────────────────────────────────
-    layers = layer_properties(prof)
+    layers = layer_properties(prof; T_method=T_method)
     n_layers = length(layers.p_mid)
     n_ν_hi   = ν_grid_hi.n
 
@@ -156,9 +158,22 @@ function iasi_forward_model(prof::AtmosphericProfile,
     end
 
     # ── 4. Radiative transfer ────────────────────────────────────────────
+    # For source_function=:cim we need the per-layer mass-weighted T (T_AVE,
+    # the same TBAR LBLRTM prints). When using the default :toon LIT, T_ave
+    # is not used; build it only for :cim.
+    T_ave_for_src = if source_function == :cim
+        p_lev = prof.pressure
+        T_lev = prof.temperature
+        [cg_temperature_mass(T_lev[k], T_lev[k+1], p_lev[k], p_lev[k+1])
+         for k in 1:n_layers]
+    else
+        nothing
+    end
     Tsfc = isnothing(T_sfc) ? prof.temperature[1] : T_sfc
     R_hi = schwarzschild_rte(ν_grid_hi, τ_layers, prof.temperature, Tsfc;
-                             μ=geom.μ, ε_sfc=ε_sfc)
+                             μ=geom.μ, ε_sfc=ε_sfc,
+                             source_function=source_function,
+                             T_ave=T_ave_for_src)
 
     # ── 5. Apply IASI ILS (Norton-Beer apodization) ──────────────────────
     if with_ils
