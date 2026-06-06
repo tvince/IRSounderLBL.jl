@@ -95,7 +95,10 @@ def record_1_2(flags):
     return "".join(buf).rstrip()
 
 
-def build_tape5(profile, v1, v2, title, angle=180.0, icntnm=1, cntscl=None):
+def build_tape5(profile, v1, v2, title, angle=180.0, icntnm=1, cntscl=None,
+                iod=0, iemit=1, dvout=0.0):
+    """Build TAPE5 text. iod=0 (radiance only, default) or iod=1 (per-layer
+    optical depths to ODint_NNN files; requires iemit=0 and dvout > 0)."""
     p_mb  = profile["p_hPa"]
     T_K   = profile["T_K"]
     z_km  = profile["z_km"]
@@ -103,6 +106,12 @@ def build_tape5(profile, v1, v2, title, angle=180.0, icntnm=1, cntscl=None):
     nlev  = len(z_km)
     z_top = z_km[-1]
     T_sfc = T_K[0]
+
+    if iod == 1:
+        if iemit != 0:
+            raise ValueError("IOD=1 requires IEMIT=0 (optical depth only)")
+        if dvout <= 0.0:
+            raise ValueError("IOD=1 requires DVOUT > 0 (output spacing)")
 
     lines = []
 
@@ -115,7 +124,7 @@ def build_tape5(profile, v1, v2, title, angle=180.0, icntnm=1, cntscl=None):
         ILBLF4=1,    # line-by-line bound 25 cm-1 (matches Julia cutoff)
         ICNTNM=icntnm,  # 0=none, 1=all, 6=per-species scale factors (Record 1.2a)
         IAERSL=0,
-        IEMIT=1,     # radiance + transmittance
+        IEMIT=iemit, # 1 = radiance + transmittance, 0 = optical depth only
         ISCAN=0,     # no instrument scan (no ILS), like with_ils=false
         IFILTR=0,
         IPLOT=0,
@@ -123,7 +132,7 @@ def build_tape5(profile, v1, v2, title, angle=180.0, icntnm=1, cntscl=None):
         IATM=1,      # use LBLATM
         IMRG=0,
         ILAS=0,
-        IOD=0,
+        IOD=iod,     # 0 = none; 1 = per-layer ODint_NNN files
         IXSECT=0,    # no cross-section molecules
         MPTS=0, NPTS=0, ISOTPL=0, IBRD=0,
     )
@@ -134,14 +143,21 @@ def build_tape5(profile, v1, v2, title, angle=180.0, icntnm=1, cntscl=None):
     if icntnm == 6:
         lines.append(cntscl if cntscl else "0. 0. 1. 0. 0. 0. 0.")
 
-    # Record 1.3 — V1, V2, SAMPLE, then defaults (zeros)
-    lines.append(E10_3(v1) + E10_3(v2) + E10_3(4.0)
-                 + E10_3(0.0) * 5)   # DVSET, ALFAL0, AVMASS, DPTMIN, DPTFAC
+    # Record 1.3 — V1, V2, SAMPLE, then defaults (zeros). For IOD=1 the
+    # format extends with ILNFLG (I1 @ col 85) and DVOUT (E10.3 @ cols 91-100):
+    #   FORMAT(8E10.3, 4X, I1, 5X, E10.3, 3X, I2, 3X, I2)
+    rec13 = (E10_3(v1) + E10_3(v2) + E10_3(4.0)
+             + E10_3(0.0) * 5)   # DVSET, ALFAL0, AVMASS, DPTMIN, DPTFAC
+    if iod == 1:
+        rec13 += " " * 4 + "0" + " " * 5 + E10_3(dvout)   # ILNFLG=0, then DVOUT
+    lines.append(rec13)
 
-    # Record 1.4 — surface boundary: TBOUND, SREMIS(1-3), SRREFL(1-3)
-    # emissivity 1, reflectivity 0 (blackbody)
-    lines.append(E10_3(T_sfc) + E10_3(1.0) + E10_3(0.0) * 2
-                 + E10_3(0.0) * 3)
+    # Record 1.4 — surface boundary: TBOUND, SREMIS(1-3), SRREFL(1-3).
+    # LBLRTM only reads this record when IEMIT > 0 (emission). For IEMIT=0
+    # (pure optical depth, used with IOD=1) it must be omitted.
+    if iemit > 0:
+        lines.append(E10_3(T_sfc) + E10_3(1.0) + E10_3(0.0) * 2
+                     + E10_3(0.0) * 3)
 
     # Record 3.1 — atmosphere control
     #  MODEL=0, ITYPE=2 (H1->H2), IBMAX=nlev (layers from our boundaries),
@@ -206,11 +222,18 @@ def main():
     ap.add_argument("--profile", default=os.path.join(DATA_DIR, "afgl_us_standard_50lev.csv"))
     ap.add_argument("-o", "--out", default=os.path.join(DATA_DIR, "lblrtm", "TAPE5"))
     ap.add_argument("--title", default="IRSounderLBL validation: AFGL US Std, CO2 15um, no LM")
+    ap.add_argument("--iod", type=int, default=0,
+                    help="optical depth output (0=none, 1=per-layer ODint_NNN files)")
+    ap.add_argument("--iemit", type=int, default=1,
+                    help="emission flag (1=radiance, 0=OD only — required when --iod 1)")
+    ap.add_argument("--dvout", type=float, default=0.0,
+                    help="output spacing in cm-1 (required when --iod 1)")
     args = ap.parse_args()
 
     prof = load_profile(args.profile)
     text = build_tape5(prof, args.v1, args.v2, args.title, angle=args.angle,
-                       icntnm=args.icntnm, cntscl=args.cntscl)
+                       icntnm=args.icntnm, cntscl=args.cntscl,
+                       iod=args.iod, iemit=args.iemit, dvout=args.dvout)
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:

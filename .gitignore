@@ -8,6 +8,10 @@ data/
 # Stray history files
 .Rhistory
 
+# Python: bytecode caches
+__pycache__/
+*.py[cod]
+
 # Julia: code coverage
 *.jl.cov
 *.jl.*.cov
