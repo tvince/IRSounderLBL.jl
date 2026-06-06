@@ -183,6 +183,94 @@ using IRSounderLBL
         @test all(isapprox.(I_iso, B_iso; rtol=1e-6))
     end
 
+    # ── CIM source function (LBLRTM Padé) — guards the 4.3 µm +7 K comb fix ─
+    # The comb was caused by a wrong layer source-function anchoring. The fix
+    # (commit "Fix CG-consistent source function") folds em into the per-layer
+    # accumulator as  I += B_avg·ΔT_k + (B_top − B_avg)·ΔT_k·f_cim(s), i.e. the
+    # correction term C_k carries the SAME (1 − e^{−s}) factor as ΔT_k. These
+    # tests pin both the _cim_correction shape and that folded algebra against
+    # the canonical LBLRTM EMIN form, so the comb cannot silently return.
+    @testset "Schwarzschild RTE — CIM source function" begin
+        # ── _cim_correction f(s) = 1 − 2·(e^{−s}/(e^{−s}−1) + 1/s) ──────────
+        cimf = IRSounderLBL._cim_correction
+        # Thin limit f(s) → s/6 (series branch is exact below 0.06)
+        @test cimf(0.03)  ≈ 0.03 / 6.0            # s/6, series branch
+        @test cimf(1e-9)  ≈ 1e-9 / 6.0 rtol=1e-6  # thin limit
+        # Reference value at s = 1 (independent hand calc)
+        @test cimf(1.0)   ≈ 0.16395341373865302 rtol=1e-12
+        # Distinct from the Toon (:toon) correction at the same s
+        @test !isapprox(cimf(1.0), IRSounderLBL._lit_correction(1.0); rtol=1e-3)
+        # Large-s asymptote f(s) → 1 − 2/s (slow saturation toward 1)
+        @test cimf(1000.0) ≈ 1.0 - 2.0/1000.0 rtol=1e-3
+        @test cimf(1e7)    ≈ 1.0 rtol=1e-6
+        # Continuity across the series/closed-form branch at s = 0.06
+        @test cimf(0.06 - 1e-9) ≈ cimf(0.06 + 1e-9) rtol=1e-3
+
+        g     = wavenumber_grid(645.0, 805.0, 10.0)   # small grid, 17 points
+        n_lay = 5
+        T_lev = [300.0, 290.0, 280.0, 270.0, 260.0, 250.0]  # surface-first
+        T_sfc = 305.0
+        # Mass-weighted layer T, deliberately ≠ the level midpoints so the test
+        # actually exercises the T_AVE anchoring (not just (T_bot+T_top)/2).
+        T_ave = [296.0, 285.0, 274.0, 263.0, 252.0]
+        τ     = fill(0.7, g.n, n_lay)                  # moderate s ~ O(1)
+
+        # Independent reference: the canonical LBLRTM EMIN per-layer form,
+        # computed via a different algebra path (explicit tr, em assembled
+        # before the 𝒯[k+1] weighting) than schwarzschild_rte's folded loop.
+        function cim_reference(g, τ, T_lev, T_sfc, T_ave; μ=1.0, ε=1.0)
+            n_ν, n_l = size(τ)
+            𝒯 = level_transmittances(τ, μ)
+            I = [ε * planck_radiance(g.ν[i], T_sfc) * 𝒯[i, 1] for i in 1:n_ν]
+            for k in 1:n_l, i in 1:n_ν
+                s     = τ[i, k] / μ
+                tr    = exp(-s)
+                B_avg = planck_radiance(g.ν[i], T_ave[k])
+                B_top = planck_radiance(g.ν[i], T_lev[k + 1])
+                em    = (1 - tr) * (B_avg + (B_top - B_avg) * cimf(s))
+                I[i] += em * 𝒯[i, k + 1]
+            end
+            return I
+        end
+
+        I_cim = schwarzschild_rte(g, τ, T_lev, T_sfc;
+                                  source_function=:cim, T_ave=T_ave)
+        I_ref = cim_reference(g, τ, T_lev, T_sfc, T_ave)
+        # The exact comb-fix guard: folded form must equal the canonical form.
+        @test I_cim ≈ I_ref rtol=1e-12
+
+        # CIM and Toon must give genuinely different answers for a T-gradient,
+        # moderate-τ atmosphere (guards against accidental aliasing of the two).
+        I_toon = schwarzschild_rte(g, τ, T_lev, T_sfc; source_function=:toon)
+        @test !all(isapprox.(I_cim, I_toon; rtol=1e-3))
+
+        # Physical limits with :cim.
+        # Optically thick + T gradient: TOA emission → B(T_top) of the top layer.
+        τ_thick = fill(100.0, g.n, n_lay)
+        I_thick = schwarzschild_rte(g, τ_thick, T_lev, T_sfc;
+                                    source_function=:cim, T_ave=T_ave)
+        @test all(isapprox.(I_thick, planck_radiance.(g.ν, T_lev[end]); rtol=1e-3))
+        # Optically thin: surface visible → B(T_sfc).
+        τ_thin = fill(1e-10, g.n, n_lay)
+        I_thin = schwarzschild_rte(g, τ_thin, T_lev, T_sfc;
+                                   source_function=:cim, T_ave=T_ave)
+        @test all(isapprox.(I_thin, planck_radiance.(g.ν, T_sfc); rtol=1e-4))
+        # Isothermal (T_lev ≡ T_ave ≡ T): I → B(T) for any τ (Kirchhoff).
+        T_iso   = 280.0
+        I_iso   = schwarzschild_rte(g, fill(2.0, g.n, n_lay),
+                                    fill(T_iso, n_lay + 1), T_iso;
+                                    source_function=:cim, T_ave=fill(T_iso, n_lay))
+        @test all(isapprox.(I_iso, planck_radiance.(g.ν, T_iso); rtol=1e-6))
+
+        # Error handling: :cim requires a correctly sized T_ave; bad symbol errors.
+        @test_throws ErrorException schwarzschild_rte(g, τ, T_lev, T_sfc;
+                                                      source_function=:cim)
+        @test_throws ErrorException schwarzschild_rte(g, τ, T_lev, T_sfc;
+                            source_function=:cim, T_ave=fill(280.0, n_lay + 1))
+        @test_throws ErrorException schwarzschild_rte(g, τ, T_lev, T_sfc;
+                                                      source_function=:bogus)
+    end
+
     # ── ILS (sinc ⊗ Gaussian default; Norton-Beer optional) ───────────────
     @testset "ILS kernel" begin
         # Default kernel (Gaussian apodization) is area-normalised
