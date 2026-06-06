@@ -69,6 +69,8 @@ end
                        with_ils=true,
                        apodization=:gaussian,
                        line_mixing=nothing,
+                       T_method=:logp_at_pcg,
+                       source_function=:cim,
                        backend=CPU()) -> (ν_iasi, R_iasi, BT_iasi)
 
 Full IASI forward model: atmosphere → level optical depths → RTE → ILS → IASI L1C.
@@ -90,6 +92,14 @@ Full IASI forward model: atmosphere → level optical depths → RTE → ILS →
 - `apodization`:      ILS apodization style: `:gaussian` (default, matches IASI L1C),
                       `:norton_beer_weak`/`_medium`/`_strong` for alternative tapers
 - `line_mixing`:      CO2 line-mixing model, e.g. `VPYLineMixing(relmat)`; `nothing` (default) disables LM
+- `T_method`:         per-layer effective-T rule for the LBL cross-section:
+                      `:logp_at_pcg` (default, per-species CG temperature) or
+                      `:mass_weighted` (single mass-weighted layer T, = LBLRTM TBAR).
+                      See `layer_properties`.
+- `source_function`:  layer Planck source: `:cim` (default, Clough–Iacono–Moncet
+                      Padé anchored at the CG layer-mean T — ~3× more accurate at
+                      native 5-km layering) or `:toon` (legacy linear-in-τ at level
+                      boundary T's). See `schwarzschild_rte`.
 - `backend`:          compute backend
 
 # Returns
@@ -109,6 +119,8 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              with_ils::Bool           = true,
                              apodization::Symbol      = :gaussian,
                              line_mixing::Union{Nothing, AbstractLineMixing} = nothing,
+                             T_method::Symbol         = :logp_at_pcg,
+                             source_function::Symbol  = :cim,
                              backend                  = CPU())
 
     # ── 1. High-resolution internal grid ────────────────────────────────
@@ -116,7 +128,7 @@ function iasi_forward_model(prof::AtmosphericProfile,
     ν_grid_hi = wavenumber_grid(iasi.ν_min, iasi.ν_max, Δν_hi)
 
     # ── 2. Compute layer properties ──────────────────────────────────────
-    layers = layer_properties(prof)
+    layers = layer_properties(prof; T_method=T_method)
     n_layers = length(layers.p_mid)
     n_ν_hi   = ν_grid_hi.n
 
@@ -156,9 +168,23 @@ function iasi_forward_model(prof::AtmosphericProfile,
     end
 
     # ── 4. Radiative transfer ────────────────────────────────────────────
+    # The default :cim source function needs the per-layer mass-weighted T
+    # (T_AVE, the same TBAR LBLRTM prints); it is ~3× more accurate at native
+    # 5-km layering than :toon (see scripts/convergence_sweep_43um.jl). For the
+    # legacy :toon LIT, T_ave is unused; build it only for :cim.
+    T_ave_for_src = if source_function == :cim
+        p_lev = prof.pressure
+        T_lev = prof.temperature
+        [cg_temperature_mass(T_lev[k], T_lev[k+1], p_lev[k], p_lev[k+1])
+         for k in 1:n_layers]
+    else
+        nothing
+    end
     Tsfc = isnothing(T_sfc) ? prof.temperature[1] : T_sfc
     R_hi = schwarzschild_rte(ν_grid_hi, τ_layers, prof.temperature, Tsfc;
-                             μ=geom.μ, ε_sfc=ε_sfc)
+                             μ=geom.μ, ε_sfc=ε_sfc,
+                             source_function=source_function,
+                             T_ave=T_ave_for_src)
 
     # ── 5. Apply IASI ILS (Norton-Beer apodization) ──────────────────────
     if with_ils
