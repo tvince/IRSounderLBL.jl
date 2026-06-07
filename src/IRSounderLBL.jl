@@ -13,6 +13,7 @@ include("Atmosphere/standard_atm.jl")
 # HITRAN
 include("HITRAN/linelist.jl")
 include("HITRAN/fetch.jl")
+include("HITRAN/cache.jl")
 include("HITRAN/partition.jl")
 include("HITRAN/broadening.jl")
 
@@ -49,6 +50,7 @@ export us_standard_atmosphere, tropical_atmosphere, subarctic_atmosphere,
 # HITRAN exports
 export HITRANLine, HITRANLinelist, filter_linelist
 export load_hitran_par, fetch_hitran_api
+export load_linelist, linelist_cache_dir, clear_linelist_cache, set_linelist_cache_dir!
 export T_REF, partition_function, Q_ratio
 export pressure_broadened_width, temperature_scaled_intensity, pressure_shift
 
