@@ -3,7 +3,12 @@
 
 # Project artifacts (large or generated)
 *.png
-data/
+# Ignore everything under data/ ...
+data/**
+# ... but descend into its directories so the exception below can match ...
+!data/**/
+# ... and keep provenance/docs that explain where the (untracked) data came from.
+!data/**/SOURCE.md
 
 # Stray history files
 .Rhistory

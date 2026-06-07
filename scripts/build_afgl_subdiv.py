@@ -24,16 +24,29 @@ Usage:
 
 import numpy as np
 import csv
+import argparse
 
 IN  = "data/afgl_us_standard_50lev.csv"
 OUT = "data/afgl_us_standard_subdiv.csv"
 
-# Subdivision range: insert at 1 km steps strictly between these (exclusive).
-Z_LO, Z_HI = 50.0, 95.0     # subdivide between 50 and 95 km
+# Subdivision range: insert at STEP-km steps strictly between these (exclusive).
+# Defaults match the original 50-95 km mesosphere study; override via CLI to
+# extend into the 95-120 km thermosphere (where the 4.3 um band head forms and
+# T rises +60 K per 5-km layer).
+Z_LO, Z_HI = 50.0, 95.0
 STEP       = 1.0
 
 
 def main():
+    global Z_LO, Z_HI, STEP, OUT
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--z-lo",  type=float, default=Z_LO)
+    ap.add_argument("--z-hi",  type=float, default=Z_HI)
+    ap.add_argument("--step",  type=float, default=STEP)
+    ap.add_argument("-o", "--out", default=OUT)
+    args = ap.parse_args()
+    Z_LO, Z_HI, STEP, OUT = args.z_lo, args.z_hi, args.step, args.out
+
     # Load original profile
     a = np.genfromtxt(IN, delimiter=",", names=True)
     z = a["z_km"]

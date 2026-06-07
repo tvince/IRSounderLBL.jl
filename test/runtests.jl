@@ -521,4 +521,56 @@ using IRSounderLBL
         @test all(==(0.0), σ_far)
     end
 
+    # ── JLD2 linelist cache ───────────────────────────────────────────────
+    @testset "Linelist cache (JLD2)" begin
+        # 67-char .par records with exact fixed-width columns the parser expects.
+        mk = (mol, iso, ν, S) -> string(
+            lpad(mol, 2), iso, lpad(string(ν), 12), lpad(string(S), 10),
+            lpad("0.0", 10), lpad("0.05", 5), lpad("0.07", 5),
+            lpad("0.0", 10), lpad("0.75", 4), lpad("0.0", 8))
+
+        mktempdir() do dir
+            par = joinpath(dir, "synthetic.par")
+            open(par, "w") do io
+                println(io, mk(2, 1, 700.0, 1.0e-21))
+                println(io, mk(2, 1, 710.0, 2.0e-21))
+                println(io, mk(2, 1, 720.0, 3.0e-21))
+            end
+            cachedir = joinpath(dir, "cache")
+
+            # Isolate the cache via the env override so we never touch Scratch.
+            withenv("IRSOUNDER_LINELIST_CACHE" => cachedir) do
+                @test linelist_cache_dir() == cachedir
+
+                # First load parses + writes a cache; second reads it back.
+                ll1 = load_linelist(par)
+                @test length(ll1) == 3
+                @test count(f -> endswith(f, ".jld2"), readdir(cachedir)) == 1
+
+                ll2 = load_linelist(par)
+                @test ll2.lines == ll1.lines          # roundtrip is exact
+
+                # Windowing is applied in memory, not baked into the cache.
+                w = load_linelist(par; ν_min = 705.0, ν_max = 715.0)
+                @test length(w) == 1
+                @test w.lines[1].wavenumber ≈ 710.0
+
+                # cache=false and rebuild=true agree with the cached result.
+                @test load_linelist(par; cache = false).lines == ll1.lines
+                @test load_linelist(par; rebuild = true).lines == ll1.lines
+
+                # Editing the .par changes size/mtime -> a fresh cache key.
+                sleep(0.01)
+                open(par, "a") do io
+                    println(io, mk(2, 1, 730.0, 4.0e-21))
+                end
+                @test length(load_linelist(par)) == 4
+                @test count(f -> endswith(f, ".jld2"), readdir(cachedir)) == 2
+
+                @test clear_linelist_cache() == 2
+                @test count(f -> endswith(f, ".jld2"), readdir(cachedir)) == 0
+            end
+        end
+    end
+
 end

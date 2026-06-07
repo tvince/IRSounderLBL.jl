@@ -31,16 +31,10 @@ const CUTOFF = 25.0      # matches LBLRTM ILBLF4=1 (25 cm⁻¹)
 const OUTDIR = "data/lblrtm"
 
 # CO₂ all-iso linelist (same files merged into the LNFL TAPE1), 25 cm⁻¹ margin.
+# load_linelist caches each parsed .par as JLD2, so repeat runs skip the ASCII parse.
 function load_co2(ν_min, ν_max; base = "co2_645_2760")
-    all_lines = HITRANLine[]
-    for iso_id in 1:3
-        fname = iso_id == 1 ? "$(base).par" : "$(base)_iso$(iso_id).par"
-        fpath = joinpath("data", fname)
-        isfile(fpath) || continue
-        ll = load_hitran_par(fpath; ν_min = ν_min - CUTOFF, ν_max = ν_max + CUTOFF)
-        append!(all_lines, ll.lines)
-    end
-    return HITRANLinelist(all_lines)
+    return load_linelist(joinpath("data", base), 1:3;
+                         ν_min = ν_min - CUTOFF, ν_max = ν_max + CUTOFF)
 end
 
 # One forward-model run + CSV write. `continua === nothing` means "use the
