@@ -5,6 +5,14 @@ using SpecialFunctions: erfcx
 const _SQRT_LN2    = sqrt(log(2.0))
 const _INV_SQRT_PI = inv(sqrt(π))
 
+# |x| (in Doppler-scaled units x = Δν·√ln2/γ_D) beyond which the pure Lorentzian
+# matches the exact Voigt H-function to <1e-4 for ALL y. Verified numerically over
+# y∈[1e-3,30]. Past this point the Gaussian core is dead and H(x,y) → y/(√π(x²+y²)),
+# so we skip the expensive complex erfcx. Mirrors LBLRTM CONVF4's far-wing
+# f4fn = S·γ_L/(π(γ_L²+Δν²)). Threshold is in x-units so it auto-scales per line
+# via f=√ln2/γ_D (≈0.3 cm⁻¹ from center at 4.3µm, ≈0.08 cm⁻¹ at 15µm).
+const _X_FAR = 122.0
+
 """
     VoigtMethod
 
@@ -147,6 +155,18 @@ CPU-only; ~3–4× slower than Humlicek.
     return real(erfcx(complex(y, -x)))
 end
 
+"""
+    _voigt_H(x, y, x_far) -> Float64
+
+Voigt H-function with an analytic far-wing shortcut: for |x| > `x_far` the profile
+is the pure Lorentzian `y/(√π(x²+y²))` (exact Voigt limit once the Gaussian core has
+decayed); otherwise the full Faddeeva. Pass `x_far = Inf` to force exact Faddeeva
+everywhere (used by the regression gate). See `_X_FAR`.
+"""
+@inline function _voigt_H(x::Float64, y::Float64, x_far::Float64)::Float64
+    return abs(x) > x_far ? y * _INV_SQRT_PI / (x*x + y*y) : faddeeva_voigt(x, y)
+end
+
 # ── Unified profile interface ─────────────────────────────────────────────────
 
 """
@@ -218,7 +238,8 @@ end
                                               lines_y,
                                               lines_Snorm,
                                               lines_H_cutoff,
-                                              cutoff)
+                                              cutoff,
+                                              x_far)
     i = @index(Global, Linear)
     ν       = ν_grid[i]
     n_lines = length(lines_ν0)
@@ -227,16 +248,19 @@ end
     j_lo = _lower_bound(lines_ν0, ν - cutoff, n_lines)
     j_hi = _upper_bound(lines_ν0, ν + cutoff, n_lines)
 
-    acc = zero(ν)   # Float32 on Metal, Float64 on CPU
-    rc  = one(ν) / cutoff
+    acc  = zero(ν)   # Float32 on Metal, Float64 on CPU
+    rc   = one(ν) / cutoff
+    ispi = oftype(ν, _INV_SQRT_PI)
     for j in j_lo:j_hi
         Δν  = ν - lines_ν0[j]
         x   = Δν * lines_f[j]
+        y   = lines_y[j]
         zr  = Δν * rc
         # AER parabolic pedestal (2 − (Δν/cutoff)²)·V(cutoff): zeroes both the
         # value AND the slope at the boundary (LBLRTM oprop.f90 CONVF4 fcnt_fn).
         ped = (oftype(ν, 2) - zr * zr) * lines_H_cutoff[j]
-        H   = weideman_voigt(x, lines_y[j]) - ped
+        # Far wing (|x| > x_far): Gaussian core dead → pure Lorentzian, skip Weideman.
+        H   = (abs(x) > x_far ? y * ispi / (x*x + y*y) : weideman_voigt(x, y)) - ped
         acc += lines_Snorm[j] * H
     end
     σ[i] = max(acc, zero(ν))
@@ -250,7 +274,8 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
                              p_atm::Float64,
                              vmr_self::Float64,
                              cutoff::Float64,
-                             method::VoigtMethod)
+                             method::VoigtMethod,
+                             x_far::Float64)
     n_ν = ν_grid.n
     n_L = length(linelist.lines)
 
@@ -323,10 +348,12 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
         end
     else  # FullFaddeeva
         # Precompute the Voigt value at the cutoff per line; subtracted as the
-        # AER parabolic pedestal below (σ=0 at boundary).
+        # AER parabolic pedestal below (σ=0 at boundary). Uses _voigt_H (same
+        # function as the wing) so at x_cut = cutoff·f ≫ x_far both evaluate the
+        # Lorentzian → the pedestal cancels the wing to *exactly* zero at ±cutoff.
         H_cutoff = Vector{Float64}(undef, n_L)
         for j in 1:n_L
-            H_cutoff[j] = faddeeva_voigt(cutoff * f_arr[j], y_arr[j])
+            H_cutoff[j] = _voigt_H(cutoff * f_arr[j], y_arr[j], x_far)
         end
         rc = 1.0 / cutoff
         Threads.@threads for i in 1:n_ν
@@ -342,7 +369,8 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
                 # value AND slope at the boundary (LBLRTM oprop.f90 CONVF4 fcnt_fn).
                 # A flat V(cutoff) pedestal leaves a kink + ~47 % excess far-wing
                 # opacity, inconsistent with the MT-CKD continuum convention.
-                H   = faddeeva_voigt(x, y_arr[j]) - (2.0 - zr * zr) * H_cutoff[j]
+                # _voigt_H switches to the analytic Lorentzian for |x| > x_far.
+                H   = _voigt_H(x, y_arr[j], x_far) - (2.0 - zr * zr) * H_cutoff[j]
                 acc += Snorm[j] * H
             end
             σ[i] = max(acc, 0.0)
@@ -364,6 +392,9 @@ in `linelist` at temperature T (K) and pressure p_atm (atm).
 - `backend`: KernelAbstractions backend, default `CPU()`
 - `method`:  `VoigtMethod` enum — `FullFaddeeva` (default, machine precision),
              `PseudoVoigt`, or `FullFaddeeva` (both CPU-only)
+- `x_far`:   |x| (Doppler-scaled, x=Δν·√ln2/γ_D) beyond which the analytic
+             Lorentzian replaces the Faddeeva/Weideman evaluation (default `_X_FAR`
+             ≈122, <1e-4-lossless). Pass `Inf` to force exact evaluation everywhere.
 """
 function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
                                        linelist::HITRANLinelist,
@@ -372,9 +403,10 @@ function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
                                        vmr_self::Float64 = 0.0,
                                        cutoff::Float64 = 25.0,
                                        backend = CPU(),
-                                       method::VoigtMethod = FullFaddeeva)
+                                       method::VoigtMethod = FullFaddeeva,
+                                       x_far::Float64 = _X_FAR)
     if method != Weideman
-        return _compute_voigt_cpu(ν_grid, linelist, T, p_atm, vmr_self, cutoff, method)
+        return _compute_voigt_cpu(ν_grid, linelist, T, p_atm, vmr_self, cutoff, method, x_far)
     end
 
     # Metal (Apple Silicon) does not support Float64 — use Float32 automatically.
@@ -403,9 +435,15 @@ function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
     ν_d  = KernelAbstractions.allocate(backend, FT, n_ν)
     copyto!(ν_d, FT.(ν_grid.ν))
 
+    # Pedestal value at the cutoff; x_cut = cutoff·f ≫ x_far so this is the
+    # Lorentzian limit, matching the kernel's far-wing branch (zero at ±cutoff).
+    xfar_FT = FT(x_far)
     H_cutoff = Vector{FT}(undef, n_L)
     for j in 1:n_L
-        H_cutoff[j] = FT(weideman_voigt(FT(cutoff) * f_arr[j], y_arr[j]))
+        x_cut = FT(cutoff) * f_arr[j]
+        H_cutoff[j] = abs(x_cut) > xfar_FT ?
+            y_arr[j] * FT(_INV_SQRT_PI) / (x_cut*x_cut + y_arr[j]^2) :
+            FT(weideman_voigt(x_cut, y_arr[j]))
     end
 
     ν0_d       = KernelAbstractions.allocate(backend, FT, n_L)
@@ -420,7 +458,7 @@ function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
     copyto!(H_cutoff_d, H_cutoff)
 
     kernel! = voigt_cross_section_kernel!(backend, 256)
-    kernel!(σ, ν_d, ν0_d, f_d, y_d, Snorm_d, H_cutoff_d, FT(cutoff); ndrange=n_ν)
+    kernel!(σ, ν_d, ν0_d, f_d, y_d, Snorm_d, H_cutoff_d, FT(cutoff), xfar_FT; ndrange=n_ν)
     KernelAbstractions.synchronize(backend)
 
     return Float64.(Array(σ))

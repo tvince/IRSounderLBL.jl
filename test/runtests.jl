@@ -102,6 +102,35 @@ using IRSounderLBL
         @test V_near_L ≈ L_half rtol=0.02
     end
 
+    # ── Voigt far-wing Lorentzian shortcut (Option A) ─────────────────────
+    @testset "Voigt far-wing Lorentzian (x_far)" begin
+        # Past |x|=x_far the Faddeeva is replaced by the analytic Lorentzian.
+        # Gate: the default x_far=_X_FAR (≈122) must reproduce exact Faddeeva
+        # (x_far=Inf) to <1e-4, while forcing x_far=0 (Lorentzian everywhere,
+        # incl. the core) must visibly differ — proving the branch is live.
+        mk(ν, S) = HITRANLine(Int8(2), Int8(1), ν, S, 1.0,
+                              Float32(0.07), Float32(0.09), 250.0,
+                              Float32(0.75), Float32(0.0))
+        ll = HITRANLinelist([mk(2348.0, 1e-19), mk(2350.0, 5e-20),
+                             mk(2351.2, 8e-20), mk(2352.5, 2e-19)])
+        g  = wavenumber_grid(2345.0, 2355.0, 0.001)
+        T, p, cutoff = 230.0, 0.2, 25.0     # narrow Doppler cores + real wings
+        csf(xf) = compute_voigt_cross_sections(g, ll, T, p; cutoff=cutoff,
+                                               method=FullFaddeeva, x_far=xf)
+
+        σ_exact = csf(Inf)        # all-Faddeeva = pre-Option-A behavior
+        σ_optA  = csf(122.0)      # Option A default
+        peak = maximum(σ_exact)
+
+        # Lossless: absolute diff far below peak, relative diff <1e-4 worst-case
+        @test maximum(abs.(σ_optA .- σ_exact)) < 1e-5 * peak
+        mask = σ_exact .> 1e-6 * peak
+        @test maximum(abs.((σ_optA[mask] .- σ_exact[mask]) ./ σ_exact[mask])) < 3e-4
+
+        # Branch must actually be exercised: Lorentzian-everywhere differs in the core
+        @test maximum(abs.(csf(0.0) .- σ_exact)) > 1e-3 * peak
+    end
+
     # ── HITRANLine parsing ────────────────────────────────────────────────
     @testset "HITRANLine parsing" begin
         # Construct a synthetic .par record (160 chars)
