@@ -228,9 +228,15 @@ end
     j_hi = _upper_bound(lines_ν0, ν + cutoff, n_lines)
 
     acc = zero(ν)   # Float32 on Metal, Float64 on CPU
+    rc  = one(ν) / cutoff
     for j in j_lo:j_hi
-        x   = (ν - lines_ν0[j]) * lines_f[j]
-        H   = weideman_voigt(x, lines_y[j]) - lines_H_cutoff[j]
+        Δν  = ν - lines_ν0[j]
+        x   = Δν * lines_f[j]
+        zr  = Δν * rc
+        # AER parabolic pedestal (2 − (Δν/cutoff)²)·V(cutoff): zeroes both the
+        # value AND the slope at the boundary (LBLRTM oprop.f90 CONVF4 fcnt_fn).
+        ped = (oftype(ν, 2) - zr * zr) * lines_H_cutoff[j]
+        H   = weideman_voigt(x, lines_y[j]) - ped
         acc += lines_Snorm[j] * H
     end
     σ[i] = max(acc, zero(ν))
@@ -285,7 +291,8 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
             γV_arr[j] = 0.5 * fV
             η_arr[j]  = 1.36603*r - 0.47719*r^2 + 0.11116*r^3
         end
-        # Precompute cutoff baseline per line (MT-CKD convention: σ=0 at boundary)
+        # Precompute the pseudo-Voigt value at the cutoff per line; subtracted as
+        # the AER parabolic pedestal below (σ=0 at boundary).
         baseline_arr = Vector{Float64}(undef, n_L)
         for j in 1:n_L
             γV = γV_arr[j]
@@ -294,6 +301,7 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
             L_c = γV / (π * (cutoff^2 + γV^2))
             baseline_arr[j] = S_arr[j] * (η * L_c + (1.0 - η) * G_c)
         end
+        rc = 1.0 / cutoff
         Threads.@threads for i in 1:n_ν
             νi   = ν_grid.ν[i]
             j_lo = _lower_bound(ν0, νi - cutoff, n_L)
@@ -305,24 +313,36 @@ function _compute_voigt_cpu(ν_grid::WavenumberGrid,
                 Δν  = νi - ν0[j]
                 G   = sqrt(log(2.0) / π) / γV * exp(-log(2.0) * Δν^2 / γV^2)
                 L   = γV / (π * (Δν^2 + γV^2))
-                acc += S_arr[j] * (η * L + (1.0 - η) * G) - baseline_arr[j]
+                zr  = Δν * rc
+                # AER parabolic pedestal (2 − (Δν/cutoff)²)·PV(cutoff); see the
+                # FullFaddeeva branch for rationale (LBLRTM CONVF4 fcnt_fn).
+                acc += S_arr[j] * (η * L + (1.0 - η) * G) -
+                       (2.0 - zr * zr) * baseline_arr[j]
             end
             σ[i] = max(acc, 0.0)
         end
     else  # FullFaddeeva
-        # Precompute cutoff baseline per line (MT-CKD convention: σ=0 at boundary)
+        # Precompute the Voigt value at the cutoff per line; subtracted as the
+        # AER parabolic pedestal below (σ=0 at boundary).
         H_cutoff = Vector{Float64}(undef, n_L)
         for j in 1:n_L
             H_cutoff[j] = faddeeva_voigt(cutoff * f_arr[j], y_arr[j])
         end
+        rc = 1.0 / cutoff
         Threads.@threads for i in 1:n_ν
             νi   = ν_grid.ν[i]
             j_lo = _lower_bound(ν0, νi - cutoff, n_L)
             j_hi = _upper_bound(ν0, νi + cutoff, n_L)
             acc  = 0.0
             for j in j_lo:j_hi
-                x   = (νi - ν0[j]) * f_arr[j]
-                H   = faddeeva_voigt(x, y_arr[j]) - H_cutoff[j]
+                Δν  = νi - ν0[j]
+                x   = Δν * f_arr[j]
+                zr  = Δν * rc
+                # AER parabolic pedestal (2 − (Δν/cutoff)²)·V(cutoff): zeroes both
+                # value AND slope at the boundary (LBLRTM oprop.f90 CONVF4 fcnt_fn).
+                # A flat V(cutoff) pedestal leaves a kink + ~47 % excess far-wing
+                # opacity, inconsistent with the MT-CKD continuum convention.
+                H   = faddeeva_voigt(x, y_arr[j]) - (2.0 - zr * zr) * H_cutoff[j]
                 acc += Snorm[j] * H
             end
             σ[i] = max(acc, 0.0)
