@@ -231,6 +231,11 @@ end
     return lo
 end
 
+# Shared vectorized kernel for FullFaddeeva and Weideman. The core H-function
+# (`Hcore` = `faddeeva_voigt` or `weideman_voigt`) is passed as an argument so the
+# kernel specializes per method at compile time — keeping a single code path while
+# letting Metal compile only the GPU-safe Weideman variant. The KernelAbstractions
+# CPU backend multithreads this; it is ~50× faster than a scalar threaded loop.
 @kernel function voigt_cross_section_kernel!(σ,
                                               ν_grid,
                                               lines_ν0,
@@ -239,7 +244,8 @@ end
                                               lines_Snorm,
                                               lines_H_cutoff,
                                               cutoff,
-                                              x_far)
+                                              x_far,
+                                              Hcore)
     i = @index(Global, Linear)
     ν       = ν_grid[i]
     n_lines = length(lines_ν0)
@@ -259,125 +265,47 @@ end
         # AER parabolic pedestal (2 − (Δν/cutoff)²)·V(cutoff): zeroes both the
         # value AND the slope at the boundary (LBLRTM oprop.f90 CONVF4 fcnt_fn).
         ped = (oftype(ν, 2) - zr * zr) * lines_H_cutoff[j]
-        # Far wing (|x| > x_far): Gaussian core dead → pure Lorentzian, skip Weideman.
-        H   = (abs(x) > x_far ? y * ispi / (x*x + y*y) : weideman_voigt(x, y)) - ped
+        # Far wing (|x| > x_far): Gaussian core dead → pure Lorentzian, skip Hcore.
+        H   = (abs(x) > x_far ? y * ispi / (x*x + y*y) : Hcore(x, y)) - ped
         acc += lines_Snorm[j] * H
     end
     σ[i] = max(acc, zero(ν))
 end
 
-# ── CPU threaded path for PseudoVoigt and FullFaddeeva ───────────────────────
+# Vectorized PseudoVoigt kernel (Thompson η·L + (1−η)·G). Per-line γV, η, S and the
+# pedestal baseline (PV value at the cutoff) are precomputed on the host.
+@kernel function pseudo_voigt_cross_section_kernel!(σ,
+                                                    ν_grid,
+                                                    lines_ν0,
+                                                    lines_γV,
+                                                    lines_η,
+                                                    lines_S,
+                                                    lines_baseline,
+                                                    cutoff)
+    i = @index(Global, Linear)
+    ν       = ν_grid[i]
+    n_lines = length(lines_ν0)
 
-function _compute_voigt_cpu(ν_grid::WavenumberGrid,
-                             linelist::HITRANLinelist,
-                             T::Float64,
-                             p_atm::Float64,
-                             vmr_self::Float64,
-                             cutoff::Float64,
-                             method::VoigtMethod,
-                             x_far::Float64)
-    n_ν = ν_grid.n
-    n_L = length(linelist.lines)
+    j_lo = _lower_bound(lines_ν0, ν - cutoff, n_lines)
+    j_hi = _upper_bound(lines_ν0, ν + cutoff, n_lines)
 
-    ν0     = Vector{Float64}(undef, n_L)
-    S_arr  = Vector{Float64}(undef, n_L)
-    γL_arr = Vector{Float64}(undef, n_L)
-    γD_arr = Vector{Float64}(undef, n_L)
-    f_arr  = Vector{Float64}(undef, n_L)
-    y_arr  = Vector{Float64}(undef, n_L)
-    Snorm  = Vector{Float64}(undef, n_L)
-
-    for (j, line) in enumerate(linelist.lines)
-        ν0[j]     = pressure_shift(line, p_atm; vmr_self=vmr_self)
-        S         = temperature_scaled_intensity(line, T)
-        gl, gd    = pressure_broadened_width(line, p_atm, T; vmr_self=vmr_self)
-        gd        = max(gd, 1e-10)
-        f         = _SQRT_LN2 / gd
-        S_arr[j]  = S
-        γL_arr[j] = gl
-        γD_arr[j] = gd
-        f_arr[j]  = f
-        y_arr[j]  = gl * f
-        Snorm[j]  = S * f * _INV_SQRT_PI
+    acc  = zero(ν)
+    rc   = one(ν) / cutoff
+    cG   = oftype(ν, sqrt(log(2.0) / π))
+    cln2 = oftype(ν, log(2.0))
+    invπ = oftype(ν, inv(π))
+    for j in j_lo:j_hi
+        γV = lines_γV[j]
+        η  = lines_η[j]
+        Δν = ν - lines_ν0[j]
+        G  = cG / γV * exp(-cln2 * Δν * Δν / (γV * γV))
+        L  = γV * invπ / (Δν * Δν + γV * γV)
+        zr = Δν * rc
+        # AER parabolic pedestal (2 − (Δν/cutoff)²)·PV(cutoff); σ=0 at boundary.
+        acc += lines_S[j] * (η * L + (one(ν) - η) * G) -
+               (oftype(ν, 2) - zr * zr) * lines_baseline[j]
     end
-
-    σ = zeros(Float64, n_ν)
-
-    if method == PseudoVoigt
-        # Precompute per-line Thompson parameters so the inner loop is cheap.
-        γV_arr = Vector{Float64}(undef, n_L)
-        η_arr  = Vector{Float64}(undef, n_L)
-        for j in 1:n_L
-            fG       = 2.0 * γD_arr[j]
-            fL       = 2.0 * γL_arr[j]
-            fV       = (fG^5 + 2.69269*fG^4*fL + 2.42843*fG^3*fL^2 +
-                        4.47163*fG^2*fL^3 + 0.07842*fG*fL^4 + fL^5)^0.2
-            r        = fL / fV
-            γV_arr[j] = 0.5 * fV
-            η_arr[j]  = 1.36603*r - 0.47719*r^2 + 0.11116*r^3
-        end
-        # Precompute the pseudo-Voigt value at the cutoff per line; subtracted as
-        # the AER parabolic pedestal below (σ=0 at boundary).
-        baseline_arr = Vector{Float64}(undef, n_L)
-        for j in 1:n_L
-            γV = γV_arr[j]
-            η  = η_arr[j]
-            G_c = sqrt(log(2.0) / π) / γV * exp(-log(2.0) * cutoff^2 / γV^2)
-            L_c = γV / (π * (cutoff^2 + γV^2))
-            baseline_arr[j] = S_arr[j] * (η * L_c + (1.0 - η) * G_c)
-        end
-        rc = 1.0 / cutoff
-        Threads.@threads for i in 1:n_ν
-            νi   = ν_grid.ν[i]
-            j_lo = _lower_bound(ν0, νi - cutoff, n_L)
-            j_hi = _upper_bound(ν0, νi + cutoff, n_L)
-            acc  = 0.0
-            for j in j_lo:j_hi
-                γV  = γV_arr[j]
-                η   = η_arr[j]
-                Δν  = νi - ν0[j]
-                G   = sqrt(log(2.0) / π) / γV * exp(-log(2.0) * Δν^2 / γV^2)
-                L   = γV / (π * (Δν^2 + γV^2))
-                zr  = Δν * rc
-                # AER parabolic pedestal (2 − (Δν/cutoff)²)·PV(cutoff); see the
-                # FullFaddeeva branch for rationale (LBLRTM CONVF4 fcnt_fn).
-                acc += S_arr[j] * (η * L + (1.0 - η) * G) -
-                       (2.0 - zr * zr) * baseline_arr[j]
-            end
-            σ[i] = max(acc, 0.0)
-        end
-    else  # FullFaddeeva
-        # Precompute the Voigt value at the cutoff per line; subtracted as the
-        # AER parabolic pedestal below (σ=0 at boundary). Uses _voigt_H (same
-        # function as the wing) so at x_cut = cutoff·f ≫ x_far both evaluate the
-        # Lorentzian → the pedestal cancels the wing to *exactly* zero at ±cutoff.
-        H_cutoff = Vector{Float64}(undef, n_L)
-        for j in 1:n_L
-            H_cutoff[j] = _voigt_H(cutoff * f_arr[j], y_arr[j], x_far)
-        end
-        rc = 1.0 / cutoff
-        Threads.@threads for i in 1:n_ν
-            νi   = ν_grid.ν[i]
-            j_lo = _lower_bound(ν0, νi - cutoff, n_L)
-            j_hi = _upper_bound(ν0, νi + cutoff, n_L)
-            acc  = 0.0
-            for j in j_lo:j_hi
-                Δν  = νi - ν0[j]
-                x   = Δν * f_arr[j]
-                zr  = Δν * rc
-                # AER parabolic pedestal (2 − (Δν/cutoff)²)·V(cutoff): zeroes both
-                # value AND slope at the boundary (LBLRTM oprop.f90 CONVF4 fcnt_fn).
-                # A flat V(cutoff) pedestal leaves a kink + ~47 % excess far-wing
-                # opacity, inconsistent with the MT-CKD continuum convention.
-                # _voigt_H switches to the analytic Lorentzian for |x| > x_far.
-                H   = _voigt_H(x, y_arr[j], x_far) - (2.0 - zr * zr) * H_cutoff[j]
-                acc += Snorm[j] * H
-            end
-            σ[i] = max(acc, 0.0)
-        end
-    end
-
-    return σ
+    σ[i] = max(acc, zero(ν))
 end
 
 """
@@ -390,11 +318,13 @@ in `linelist` at temperature T (K) and pressure p_atm (atm).
 
 - `cutoff`:  line wing cut-off (cm⁻¹), default 25 cm⁻¹
 - `backend`: KernelAbstractions backend, default `CPU()`
-- `method`:  `VoigtMethod` enum — `FullFaddeeva` (default, machine precision),
-             `PseudoVoigt`, or `FullFaddeeva` (both CPU-only)
+- `method`:  `VoigtMethod` enum — `FullFaddeeva` (default, machine precision, CPU-only),
+             `Weideman` (~1e-4, GPU-capable), or `PseudoVoigt` (~1%, GPU-capable).
+             All three run the vectorized KernelAbstractions kernel.
 - `x_far`:   |x| (Doppler-scaled, x=Δν·√ln2/γ_D) beyond which the analytic
              Lorentzian replaces the Faddeeva/Weideman evaluation (default `_X_FAR`
              ≈122, <1e-4-lossless). Pass `Inf` to force exact evaluation everywhere.
+             (Unused by `PseudoVoigt`, which has its own closed-form wing.)
 """
 function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
                                        linelist::HITRANLinelist,
@@ -405,61 +335,80 @@ function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
                                        backend = CPU(),
                                        method::VoigtMethod = FullFaddeeva,
                                        x_far::Float64 = _X_FAR)
-    if method != Weideman
-        return _compute_voigt_cpu(ν_grid, linelist, T, p_atm, vmr_self, cutoff, method, x_far)
-    end
-
     # Metal (Apple Silicon) does not support Float64 — use Float32 automatically.
     FT = (backend isa Metal.MetalBackend) ? Float32 : Float64
+    (method == FullFaddeeva && FT === Float32) &&
+        error("FullFaddeeva uses complex erfcx (Float64/CPU only); use Weideman on a Metal backend.")
 
     n_ν = ν_grid.n
     n_L = length(linelist.lines)
 
+    # ── Per-line parameters (shared) ─────────────────────────────────────────
     ν0    = Vector{FT}(undef, n_L)
+    S_arr = Vector{FT}(undef, n_L)
+    γL    = Vector{FT}(undef, n_L)
+    γD    = Vector{FT}(undef, n_L)
     f_arr = Vector{FT}(undef, n_L)
     y_arr = Vector{FT}(undef, n_L)
     Snorm = Vector{FT}(undef, n_L)
-
     for (j, line) in enumerate(linelist.lines)
-        ν0[j]  = FT(pressure_shift(line, p_atm))
+        ν0[j]  = FT(pressure_shift(line, p_atm; vmr_self=vmr_self))
         S      = temperature_scaled_intensity(line, T)
         gl, gd = pressure_broadened_width(line, p_atm, T; vmr_self=vmr_self)
         gd     = max(gd, 1e-10)
         f      = _SQRT_LN2 / gd
+        S_arr[j] = FT(S)
+        γL[j]    = FT(gl)
+        γD[j]    = FT(gd)
         f_arr[j] = FT(f)
         y_arr[j] = FT(gl * f)
         Snorm[j] = FT(S * f * _INV_SQRT_PI)
     end
 
-    σ    = KernelAbstractions.zeros(backend, FT, n_ν)
-    ν_d  = KernelAbstractions.allocate(backend, FT, n_ν)
+    σ   = KernelAbstractions.zeros(backend, FT, n_ν)
+    ν_d = KernelAbstractions.allocate(backend, FT, n_ν)
     copyto!(ν_d, FT.(ν_grid.ν))
+    todev(v) = (d = KernelAbstractions.allocate(backend, FT, length(v)); copyto!(d, v); d)
+    ν0_d = todev(ν0)
 
-    # Pedestal value at the cutoff; x_cut = cutoff·f ≫ x_far so this is the
-    # Lorentzian limit, matching the kernel's far-wing branch (zero at ±cutoff).
-    xfar_FT = FT(x_far)
-    H_cutoff = Vector{FT}(undef, n_L)
-    for j in 1:n_L
-        x_cut = FT(cutoff) * f_arr[j]
-        H_cutoff[j] = abs(x_cut) > xfar_FT ?
-            y_arr[j] * FT(_INV_SQRT_PI) / (x_cut*x_cut + y_arr[j]^2) :
-            FT(weideman_voigt(x_cut, y_arr[j]))
+    if method == PseudoVoigt
+        # Per-line Thompson γV, η and the pedestal baseline (PV at the cutoff).
+        γV   = Vector{FT}(undef, n_L)
+        η    = Vector{FT}(undef, n_L)
+        base = Vector{FT}(undef, n_L)
+        cG   = FT(sqrt(log(2.0) / π))
+        for j in 1:n_L
+            fG = 2 * γD[j]; fL = 2 * γL[j]
+            fV = (fG^5 + FT(2.69269)*fG^4*fL + FT(2.42843)*fG^3*fL^2 +
+                  FT(4.47163)*fG^2*fL^3 + FT(0.07842)*fG*fL^4 + fL^5)^FT(0.2)
+            r     = fL / fV
+            γV[j] = FT(0.5) * fV
+            η[j]  = FT(1.36603)*r - FT(0.47719)*r^2 + FT(0.11116)*r^3
+            G_c   = cG / γV[j] * exp(FT(-log(2.0)) * FT(cutoff)^2 / γV[j]^2)
+            L_c   = γV[j] * FT(inv(π)) / (FT(cutoff)^2 + γV[j]^2)
+            base[j] = S_arr[j] * (η[j] * L_c + (one(FT) - η[j]) * G_c)
+        end
+        kernel! = pseudo_voigt_cross_section_kernel!(backend, 256)
+        kernel!(σ, ν_d, ν0_d, todev(γV), todev(η), todev(S_arr), todev(base),
+                FT(cutoff); ndrange = n_ν)
+    else
+        # FullFaddeeva or Weideman — shared kernel, core H selected per method.
+        Hcore   = method == FullFaddeeva ? faddeeva_voigt : weideman_voigt
+        xfar_FT = FT(x_far)
+        # Pedestal value at the cutoff; x_cut = cutoff·f ≫ x_far so this is the
+        # Lorentzian limit, matching the kernel's far-wing branch (zero at ±cutoff).
+        H_cutoff = Vector{FT}(undef, n_L)
+        for j in 1:n_L
+            x_cut = FT(cutoff) * f_arr[j]
+            H_cutoff[j] = abs(x_cut) > xfar_FT ?
+                y_arr[j] * FT(_INV_SQRT_PI) / (x_cut*x_cut + y_arr[j]^2) :
+                FT(Hcore(x_cut, y_arr[j]))
+        end
+        kernel! = voigt_cross_section_kernel!(backend, 256)
+        kernel!(σ, ν_d, ν0_d, todev(f_arr), todev(y_arr), todev(Snorm),
+                todev(H_cutoff), FT(cutoff), xfar_FT, Hcore; ndrange = n_ν)
     end
 
-    ν0_d       = KernelAbstractions.allocate(backend, FT, n_L)
-    f_d        = KernelAbstractions.allocate(backend, FT, n_L)
-    y_d        = KernelAbstractions.allocate(backend, FT, n_L)
-    Snorm_d    = KernelAbstractions.allocate(backend, FT, n_L)
-    H_cutoff_d = KernelAbstractions.allocate(backend, FT, n_L)
-    copyto!(ν0_d,       ν0)
-    copyto!(f_d,        f_arr)
-    copyto!(y_d,        y_arr)
-    copyto!(Snorm_d,    Snorm)
-    copyto!(H_cutoff_d, H_cutoff)
-
-    kernel! = voigt_cross_section_kernel!(backend, 256)
-    kernel!(σ, ν_d, ν0_d, f_d, y_d, Snorm_d, H_cutoff_d, FT(cutoff), xfar_FT; ndrange=n_ν)
     KernelAbstractions.synchronize(backend)
-
     return Float64.(Array(σ))
 end

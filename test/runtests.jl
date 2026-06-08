@@ -131,6 +131,30 @@ using IRSounderLBL
         @test maximum(abs.(csf(0.0) .- σ_exact)) > 1e-3 * peak
     end
 
+    # ── Vectorized Voigt methods agree (all run the KA kernel) ─────────────
+    @testset "Voigt methods (vectorized) agree" begin
+        # FullFaddeeva, Weideman, PseudoVoigt all go through the KernelAbstractions
+        # kernel now. Cross-check their cross-sections against each other at their
+        # documented accuracies (Weideman ~1e-4, PseudoVoigt ~1% core).
+        mk(ν, S) = HITRANLine(Int8(2), Int8(1), ν, S, 1.0,
+                              Float32(0.07), Float32(0.09), 250.0,
+                              Float32(0.75), Float32(0.0))
+        ll = HITRANLinelist([mk(2348.0, 1e-19), mk(2350.0, 5e-20),
+                             mk(2351.2, 8e-20), mk(2352.5, 2e-19)])
+        g  = wavenumber_grid(2345.0, 2355.0, 0.001)
+        T, p, cutoff = 230.0, 0.2, 25.0
+        cs(m) = compute_voigt_cross_sections(g, ll, T, p; cutoff=cutoff, method=m)
+        σF = cs(FullFaddeeva); σW = cs(Weideman); σP = cs(PseudoVoigt)
+        @test all(isfinite, σF) && all(σF .>= 0)
+        @test all(isfinite, σW) && all(σW .>= 0)
+        @test all(isfinite, σP) && all(σP .>= 0)
+        peak = maximum(σF)
+        mask = σF .> 1e-3 * peak                       # near cores
+        # Weideman ≈ Faddeeva to ~1e-3; PseudoVoigt ~few % in the core region
+        @test maximum(abs.((σW[mask] .- σF[mask]) ./ σF[mask])) < 2e-3
+        @test maximum(abs.((σP[mask] .- σF[mask]) ./ σF[mask])) < 5e-2
+    end
+
     # ── HITRANLine parsing ────────────────────────────────────────────────
     @testset "HITRANLine parsing" begin
         # Construct a synthetic .par record (160 chars)
