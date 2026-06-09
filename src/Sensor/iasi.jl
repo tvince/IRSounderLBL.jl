@@ -96,6 +96,14 @@ Full IASI forward model: atmosphere → level optical depths → RTE → ILS →
                       `nothing` (default), the grid is derived from `internal_dnu`.
                       An explicit value takes precedence over `internal_dnu`.
 - `cutoff`:           Voigt wing cutoff (cm⁻¹)
+- `dptmn`:            absolute per-layer optical-depth floor for strength-based
+                      line rejection (default 1e-6). Per layer, a line is dropped
+                      when its peak OD contribution `peak_σ·vmr·Δp·N_air` falls
+                      below `dptmn` — LBLRTM's DPTMIN criterion. BT-lossless at
+                      1e-6 (≤0.6 mK over the IASI ILS, ~5× fewer lines; see
+                      scripts/validate_line_rejection_bt.jl). Set 0.0 to disable.
+                      Skipped on the line-mixing CO₂ path (its band coefficients
+                      assume the full line set).
 - `apply_continuum`:  master switch for continua (default true)
 - `continua`:         which continua to include when `apply_continuum`; any of
                       `:h2o`, `:co2` (MT-CKD CO₂), `:co2_cia`, `:n2`, `:o2`
@@ -127,6 +135,7 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              internal_dnu::Union{Float64, Nothing} = 0.001,
                              high_res_factor::Union{Int, Nothing}   = nothing,
                              cutoff::Float64          = 25.0,
+                             dptmn::Float64           = 1e-6,
                              apply_continuum::Bool    = true,
                              continua                 = (:h2o, :co2, :co2_cia, :n2, :o2),
                              with_ils::Bool           = true,
@@ -170,11 +179,22 @@ function iasi_forward_model(prof::AtmosphericProfile,
             p_cg_atm = layers.p_cg[sp][k] / 1013.25
             T_cg_sp  = layers.T_cg[sp][k]
             vmr_self = (sp == H2O) ? vmr : 0.0
-            σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll,
+            coef     = vmr * layers.Δp[k] * Nair_per_vmr
+
+            # Strength-based line rejection: drop lines whose peak OD contribution
+            # (peak_σ·coef) is below `dptmn`. Skipped on the line-mixing CO₂ path,
+            # whose band coefficients assume the full line set (see _reject_weak_lines).
+            lm_co2 = sp == CO2 && (line_mixing isa VPYLineMixing ||
+                                   line_mixing isa VPWLineMixing)
+            ll_use = (dptmn > 0.0 && !lm_co2) ?
+                _reject_weak_lines(ll, T_cg_sp, p_cg_atm, coef;
+                                   vmr_self=vmr_self, dptmn=dptmn) : ll
+
+            σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll_use,
                                            T_cg_sp, p_cg_atm;
                                            vmr_self=vmr_self,
                                            cutoff=cutoff, backend=backend)
-            τ_layers[:, k] .+= σ_sp .* (vmr * layers.Δp[k] * Nair_per_vmr)
+            τ_layers[:, k] .+= σ_sp .* coef
         end
     end
 

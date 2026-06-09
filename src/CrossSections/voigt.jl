@@ -309,6 +309,48 @@ end
 end
 
 """
+    _reject_weak_lines(linelist, T, p_atm, coef; vmr_self=0.0, dptmn=0.0) -> HITRANLinelist
+
+Drop lines whose PEAK optical-depth contribution in this layer is below the
+absolute floor `dptmn`. The peak is the line-centre cross-section
+`Snorm·H(0,y) = S·(√ln2/γ_D)·π^(-1/2)·erfcx(y)` (with `y = γ_L·√ln2/γ_D`), scaled
+by the layer column coefficient `coef = vmr·Δp·N_air`, so `τ_peak = peak_σ·coef`.
+
+This is LBLRTM's DPTMIN criterion (`oprop.f90`: `SPEAK > DPTMN`), evaluated PER
+LAYER so the rejection auto-adapts to each layer's absorber amount and (T,p) line
+shape — a line is dropped only where its strongest possible contribution to *that*
+layer's optical depth is negligible.
+
+`dptmn ≤ 0` disables rejection (returns the input unchanged). The floor is
+BT-lossless at 1e-6 (≤0.6 mK over the real IASI ILS; ~5× fewer lines per layer —
+see scripts/validate_line_rejection_bt.jl). The relative DPTFC term tested there
+was found to bias BT for no gain, so it is not carried here.
+"""
+function _reject_weak_lines(linelist::HITRANLinelist, T::Float64, p_atm::Float64,
+                            coef::Float64; vmr_self::Float64 = 0.0,
+                            dptmn::Float64 = 0.0)::HITRANLinelist
+    dptmn <= 0.0 && return linelist
+    lines = linelist.lines
+    keep  = falses(length(lines))
+    nkeep = 0
+    @inbounds for (j, line) in enumerate(lines)
+        S      = temperature_scaled_intensity(line, T)
+        gl, gd = pressure_broadened_width(line, p_atm, T; vmr_self=vmr_self)
+        gd     = max(gd, 1e-10)
+        f      = _SQRT_LN2 / gd
+        peakσ  = (S * f * _INV_SQRT_PI) * faddeeva_voigt(0.0, gl * f)
+        if peakσ * coef > dptmn
+            keep[j] = true
+            nkeep  += 1
+        end
+    end
+    nkeep == length(lines) && return linelist                               # nothing dropped
+    nkeep == 0 && return HITRANLinelist(HITRANLine[], Set{Int}(),           # all dropped (σ≈0)
+                                        linelist.ν_min, linelist.ν_max)
+    return HITRANLinelist(lines[keep])
+end
+
+"""
     compute_voigt_cross_sections(ν_grid, linelist, T, p_atm;
                                   cutoff=25.0, backend=CPU(),
                                   method=FullFaddeeva) -> Vector{Float64}
