@@ -63,7 +63,8 @@ end
                        geom=nadir_geometry(),
                        T_sfc=nothing,
                        ε_sfc=1.0,
-                       high_res_factor=4,
+                       internal_dnu=0.001,
+                       high_res_factor=nothing,
                        cutoff=25.0,
                        apply_continuum=true,
                        with_ils=true,
@@ -82,7 +83,18 @@ Full IASI forward model: atmosphere → level optical depths → RTE → ILS →
 - `geom`:             `ViewingGeometry`
 - `T_sfc`:            surface skin temperature (K); defaults to profile[1]
 - `ε_sfc`:            surface emissivity
-- `high_res_factor`:  internal spectral over-sampling relative to IASI Δν
+- `internal_dnu`:     target ABSOLUTE internal monochromatic grid spacing (cm⁻¹,
+                      default 0.001). Sized to resolve the Doppler-limited line
+                      cores; converges the ILS-convolved BT to ≤6 mK RMS / ≤20 mK
+                      worst-point vs a 0.0005 reference, across IASI and IASI-NG in
+                      both the 15 µm and 4.3 µm bands (4.3 µm is ~0.05 mK; 15 µm,
+                      with narrower cores, is the limiting ~5 mK case). See
+                      scripts/grid_convergence_iasing.jl. Auto-adapts to any sensor
+                      Δν. Set `high_res_factor` to override.
+- `high_res_factor`:  legacy override — internal over-sampling as a divisor of
+                      the sensor Δν (`Δν_int = iasi.Δν / high_res_factor`). When
+                      `nothing` (default), the grid is derived from `internal_dnu`.
+                      An explicit value takes precedence over `internal_dnu`.
 - `cutoff`:           Voigt wing cutoff (cm⁻¹)
 - `apply_continuum`:  master switch for continua (default true)
 - `continua`:         which continua to include when `apply_continuum`; any of
@@ -112,7 +124,8 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              geom::ViewingGeometry    = nadir_geometry(),
                              T_sfc::Union{Float64, Nothing} = nothing,
                              ε_sfc::Float64           = 1.0,
-                             high_res_factor::Int     = 4,
+                             internal_dnu::Union{Float64, Nothing} = 0.001,
+                             high_res_factor::Union{Int, Nothing}   = nothing,
                              cutoff::Float64          = 25.0,
                              apply_continuum::Bool    = true,
                              continua                 = (:h2o, :co2, :co2_cia, :n2, :o2),
@@ -124,7 +137,20 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              backend                  = CPU())
 
     # ── 1. High-resolution internal grid ────────────────────────────────
-    Δν_hi = iasi.Δν / high_res_factor
+    # The internal monochromatic grid must resolve the narrowest line cores
+    # (Doppler floor ~0.004 cm⁻¹ at 4.3 µm, ~0.001 at 15 µm). `internal_dnu`
+    # targets that ABSOLUTE spacing; `high_res_factor`, if given, overrides it
+    # (legacy relative divisor of the sensor Δν). See scripts/grid_convergence_iasing.jl:
+    # internal 0.001 cm⁻¹ converges the ILS-convolved BT to <1e-4 K, while the old
+    # high_res_factor=4 (=0.0625 cm⁻¹ for IASI) was ≈1 K off in dense bands.
+    hrf = if high_res_factor !== nothing
+        high_res_factor
+    elseif internal_dnu !== nothing
+        max(1, ceil(Int, iasi.Δν / internal_dnu))
+    else
+        4
+    end
+    Δν_hi = iasi.Δν / hrf
     ν_grid_hi = wavenumber_grid(iasi.ν_min, iasi.ν_max, Δν_hi)
 
     # ── 2. Compute layer properties ──────────────────────────────────────
