@@ -36,10 +36,11 @@ ax[0].set_xlim(2000, 2500)
 ax[1].axhline(0, color="k", lw=0.5)
 ax[1].axvspan(2386, 2398, color="orange", alpha=0.15)
 ax[1].plot(nuj43, d43, lw=0.4, color="#2ca02c")
+bh = (nuj43 >= 2386) & (nuj43 <= 2398)
 ax[1].set_title(f"4.3 um difference (Julia - LBLRTM)  |  full RMS {np.sqrt(np.mean(d43**2)):.3f} K, "
-                f"line cores ~0.10-0.16 K, band head -3.9 K mean")
+                f"band head 2386-2398 RMS {np.sqrt(np.mean(d43[bh]**2)):.3f} K")
 ax[1].set_ylabel("dBT (K)"); ax[1].set_xlim(2000, 2500)
-ax[1].set_ylim(-7.5, 3)
+ax[1].set_ylim(-1.0, 1.0)
 
 # 15 um diff
 ax[2].axhline(0, color="k", lw=0.5)
