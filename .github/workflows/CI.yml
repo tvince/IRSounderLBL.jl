@@ -31,6 +31,13 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
+      # The committed Manifest.toml is locked to one Julia version (kept for local
+      # reproducible dev). It can't instantiate across the 1.10/1.12 matrix — e.g.
+      # 1.10 fails to find OpenSSL_jll. Remove it in CI only so each job resolves a
+      # fresh, version-appropriate Manifest from [compat]; this also catches dep drift.
+      - name: Resolve deps fresh (drop locked Manifest in CI)
+        run: rm -f Manifest.toml
+        shell: bash
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
