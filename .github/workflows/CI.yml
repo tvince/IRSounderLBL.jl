@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Don't let one red cell cancel the others — we want to see every
+      # (version, OS) result, especially the Linux/Metal load question.
+      fail-fast: false
+      matrix:
+        version:
+          - '1.10'   # LTS  (Project.toml [compat] lower bound)
+          - '1.12'   # current
+        os:
+          - ubuntu-latest   # Linux; also exercises the non-functional-GPU fallback
+          - macos-latest    # Apple Silicon; native Metal (the dev platform)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+      # The committed Manifest.toml is locked to one Julia version (kept for local
+      # reproducible dev). It can't instantiate across the 1.10/1.12 matrix — e.g.
+      # 1.10 fails to find OpenSSL_jll. Remove it in CI only so each job resolves a
+      # fresh, version-appropriate Manifest from [compat]; this also catches dep drift.
+      - name: Resolve deps fresh (drop locked Manifest in CI)
+        run: rm -f Manifest.toml
+        shell: bash
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
