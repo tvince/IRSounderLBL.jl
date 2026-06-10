@@ -41,3 +41,26 @@ jobs:
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+
+  # RHEL 10 coverage. GitHub offers no native RHEL runner, so run inside Red Hat's
+  # UBI 10 image (Universal Base Image — the freely redistributable RHEL build) on
+  # an Ubuntu host. UBI ships a near-minimal userland, so we install the few tools
+  # the JS actions and Julia tarball extraction need before checkout.
+  test-rhel:
+    name: Julia 1.10 - RHEL 10 (UBI)
+    runs-on: ubuntu-latest
+    container:
+      image: redhat/ubi10:latest
+    steps:
+      - name: Install prerequisites in UBI
+        run: dnf -y install git tar gzip which findutils
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.10'
+      - name: Resolve deps fresh (drop locked Manifest in CI)
+        run: rm -f Manifest.toml
+        shell: bash
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
