@@ -63,7 +63,8 @@ end
                        geom=nadir_geometry(),
                        T_sfc=nothing,
                        ε_sfc=1.0,
-                       high_res_factor=4,
+                       internal_dnu=0.001,
+                       high_res_factor=nothing,
                        cutoff=25.0,
                        apply_continuum=true,
                        with_ils=true,
@@ -82,8 +83,27 @@ Full IASI forward model: atmosphere → level optical depths → RTE → ILS →
 - `geom`:             `ViewingGeometry`
 - `T_sfc`:            surface skin temperature (K); defaults to profile[1]
 - `ε_sfc`:            surface emissivity
-- `high_res_factor`:  internal spectral over-sampling relative to IASI Δν
+- `internal_dnu`:     target ABSOLUTE internal monochromatic grid spacing (cm⁻¹,
+                      default 0.001). Sized to resolve the Doppler-limited line
+                      cores; converges the ILS-convolved BT to ≤6 mK RMS / ≤20 mK
+                      worst-point vs a 0.0005 reference, across IASI and IASI-NG in
+                      both the 15 µm and 4.3 µm bands (4.3 µm is ~0.05 mK; 15 µm,
+                      with narrower cores, is the limiting ~5 mK case). See
+                      scripts/grid_convergence_iasing.jl. Auto-adapts to any sensor
+                      Δν. Set `high_res_factor` to override.
+- `high_res_factor`:  legacy override — internal over-sampling as a divisor of
+                      the sensor Δν (`Δν_int = iasi.Δν / high_res_factor`). When
+                      `nothing` (default), the grid is derived from `internal_dnu`.
+                      An explicit value takes precedence over `internal_dnu`.
 - `cutoff`:           Voigt wing cutoff (cm⁻¹)
+- `dptmn`:            absolute per-layer optical-depth floor for strength-based
+                      line rejection (default 1e-6). Per layer, a line is dropped
+                      when its peak OD contribution `peak_σ·vmr·Δp·N_air` falls
+                      below `dptmn` — LBLRTM's DPTMIN criterion. BT-lossless at
+                      1e-6 (≤0.6 mK over the IASI ILS, ~5× fewer lines; see
+                      scripts/validate_line_rejection_bt.jl). Set 0.0 to disable.
+                      Skipped on the line-mixing CO₂ path (its band coefficients
+                      assume the full line set).
 - `apply_continuum`:  master switch for continua (default true)
 - `continua`:         which continua to include when `apply_continuum`; any of
                       `:h2o`, `:co2` (MT-CKD CO₂), `:co2_cia`, `:n2`, `:o2`
@@ -112,8 +132,10 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              geom::ViewingGeometry    = nadir_geometry(),
                              T_sfc::Union{Float64, Nothing} = nothing,
                              ε_sfc::Float64           = 1.0,
-                             high_res_factor::Int     = 4,
+                             internal_dnu::Union{Float64, Nothing} = 0.001,
+                             high_res_factor::Union{Int, Nothing}   = nothing,
                              cutoff::Float64          = 25.0,
+                             dptmn::Float64           = 1e-6,
                              apply_continuum::Bool    = true,
                              continua                 = (:h2o, :co2, :co2_cia, :n2, :o2),
                              with_ils::Bool           = true,
@@ -124,7 +146,20 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              backend                  = CPU())
 
     # ── 1. High-resolution internal grid ────────────────────────────────
-    Δν_hi = iasi.Δν / high_res_factor
+    # The internal monochromatic grid must resolve the narrowest line cores
+    # (Doppler floor ~0.004 cm⁻¹ at 4.3 µm, ~0.001 at 15 µm). `internal_dnu`
+    # targets that ABSOLUTE spacing; `high_res_factor`, if given, overrides it
+    # (legacy relative divisor of the sensor Δν). See scripts/grid_convergence_iasing.jl:
+    # internal 0.001 cm⁻¹ converges the ILS-convolved BT to <1e-4 K, while the old
+    # high_res_factor=4 (=0.0625 cm⁻¹ for IASI) was ≈1 K off in dense bands.
+    hrf = if high_res_factor !== nothing
+        high_res_factor
+    elseif internal_dnu !== nothing
+        max(1, ceil(Int, iasi.Δν / internal_dnu))
+    else
+        4
+    end
+    Δν_hi = iasi.Δν / hrf
     ν_grid_hi = wavenumber_grid(iasi.ν_min, iasi.ν_max, Δν_hi)
 
     # ── 2. Compute layer properties ──────────────────────────────────────
@@ -144,11 +179,22 @@ function iasi_forward_model(prof::AtmosphericProfile,
             p_cg_atm = layers.p_cg[sp][k] / 1013.25
             T_cg_sp  = layers.T_cg[sp][k]
             vmr_self = (sp == H2O) ? vmr : 0.0
-            σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll,
+            coef     = vmr * layers.Δp[k] * Nair_per_vmr
+
+            # Strength-based line rejection: drop lines whose peak OD contribution
+            # (peak_σ·coef) is below `dptmn`. Skipped on the line-mixing CO₂ path,
+            # whose band coefficients assume the full line set (see _reject_weak_lines).
+            lm_co2 = sp == CO2 && (line_mixing isa VPYLineMixing ||
+                                   line_mixing isa VPWLineMixing)
+            ll_use = (dptmn > 0.0 && !lm_co2) ?
+                _reject_weak_lines(ll, T_cg_sp, p_cg_atm, coef;
+                                   vmr_self=vmr_self, dptmn=dptmn) : ll
+
+            σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll_use,
                                            T_cg_sp, p_cg_atm;
                                            vmr_self=vmr_self,
                                            cutoff=cutoff, backend=backend)
-            τ_layers[:, k] .+= σ_sp .* (vmr * layers.Δp[k] * Nair_per_vmr)
+            τ_layers[:, k] .+= σ_sp .* coef
         end
     end
 
