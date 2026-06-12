@@ -621,6 +621,64 @@ using IRSounderLBL
         @test maximum(abs.(σy_lor  .- σy_exact)) > 1e-3 * pky        # branch live
     end
 
+    # ── #4 band-strength cutoff (min_band_strength) ───────────────────────
+    @testset "Line mixing — band-strength cutoff (min_band_strength)" begin
+        # The #4 cutoff skips coupled bands whose integrated intensity
+        # (_band_eff_strength) is below `min_band_strength`. Gate: a threshold
+        # set between a strong and a weak band drops EXACTLY the weak band — the
+        # dispersive result must equal computing with only the strong band, and
+        # must differ from the no-cutoff (both-bands) result.
+        RL = IRSounderLBL.RelmatLine
+        RB = IRSounderLBL.RelmatBand
+        WT = IRSounderLBL.W0B0Table
+        RD = IRSounderLBL.HITRANRelmatData
+
+        # Strong Q-band near 700; weak Q-band near 720 (DipoT 1e-3 ⇒ ~1e6× weaker).
+        s1 = RL(Int8(1), 700.00, Int16(20), Int8(0), 0.03, Float32(0.7), Float32(0.0),
+                300.0, 1.0, 1.0, 1.0)
+        s2 = RL(Int8(1), 700.05, Int16(18), Int8(0), 0.03, Float32(0.7), Float32(0.0),
+                260.0, 1.0, 0.8, 1.0)
+        w1 = RL(Int8(1), 720.00, Int16(4),  Int8(0), 0.03, Float32(0.7), Float32(0.0),
+                300.0, 1.0e-3, 1.0, 1.0e-3)
+        w2 = RL(Int8(1), 720.05, Int16(2),  Int8(0), 0.03, Float32(0.7), Float32(0.0),
+                260.0, 1.0e-3, 0.8, 1.0e-3)
+        bStrong = RB("STRONG", Int8(1), Int8(1), Int8(1), 700.0, 700.05, [s1, s2])
+        bWeak   = RB("WEAK",   Int8(1), Int8(1), Int8(1), 720.0, 720.05, [w1, w2])
+
+        wt = WT()                       # shared (li,lf)=(1,1) coupling table
+        wt.qq[(20, 18)] = (log(0.03), 0.5)
+        wt.qq[(4, 2)]   = (log(0.03), 0.5)
+        wtfit = Dict{NTuple{2,Int8}, typeof(wt)}((Int8(1), Int8(1)) => wt)
+
+        relmat_both   = RD([bStrong, bWeak], wtfit)
+        relmat_strong = RD([bStrong],        wtfit)
+
+        sS = IRSounderLBL._band_eff_strength(bStrong)
+        sW = IRSounderLBL._band_eff_strength(bWeak)
+        @test sS > sW
+        thr = sqrt(sS * sW)             # geometric mean ⇒ strictly between the two
+
+        T, p_atm = 250.0, 0.5
+        g = wavenumber_grid(695.0, 725.0, 0.01)
+
+        σ_full   = IRSounderLBL.compute_lm_dispersive_correction(g, relmat_both,   T, p_atm; min_band_strength=0.0)
+        σ_cut    = IRSounderLBL.compute_lm_dispersive_correction(g, relmat_both,   T, p_atm; min_band_strength=thr)
+        σ_strong = IRSounderLBL.compute_lm_dispersive_correction(g, relmat_strong, T, p_atm; min_band_strength=0.0)
+
+        # Cutoff drops exactly the weak band ⇒ identical to strong-only.
+        @test σ_cut == σ_strong
+        # ...and the weak band really did contribute, so the cutoff changed the result.
+        @test maximum(abs.(σ_full .- σ_cut)) > 0.0
+        # min_band_strength=0.0 is exact (no band dropped).
+        @test IRSounderLBL.compute_lm_dispersive_correction(g, relmat_both, T, p_atm; min_band_strength=0.0) == σ_full
+
+        # Guard the abundance-double-count fix: _band_eff_strength must NOT depend
+        # on isotopologue (S-file DipoT/PopuT0 already include abundance). Same
+        # lines under a different isot ⇒ identical effective strength.
+        bWeak_iso2 = RB("WEAK2", Int8(1), Int8(1), Int8(2), 720.0, 720.05, [w1, w2])
+        @test IRSounderLBL._band_eff_strength(bWeak_iso2) == sW
+    end
+
     # ── JLD2 linelist cache ───────────────────────────────────────────────
     @testset "Linelist cache (JLD2)" begin
         # 67-char .par records with exact fixed-width columns the parser expects.
