@@ -775,7 +775,14 @@ function compute_vpw_band_xsec(ν_grid::WavenumberGrid, modes::BandModes;
     A_im   = imag.(modes.amplitudes)
     prefac = f * _INV_SQRT_PI
 
-    Threads.@threads for i in 1:n_ν
+    # Band ν-window: poles only contribute within ±cutoff of their Re position, so
+    # restrict the (threaded) ν loop to that index span instead of the whole grid.
+    # The per-pole cutoff check below still guarantees correctness for any margin.
+    i_lo = searchsortedfirst(ν_grid.ν, minimum(re_λ) - cutoff)
+    i_hi = searchsortedlast(ν_grid.ν,  maximum(re_λ) + cutoff)
+    i_lo > i_hi && return σ
+
+    Threads.@threads for i in i_lo:i_hi
         νi  = ν_grid.ν[i]
         acc = 0.0
         for k in 1:n_p
@@ -949,6 +956,7 @@ function _lm_band_dispersive(ν_grid::WavenumberGrid, band::RelmatBand,
     y_b    = Vector{Float64}(undef, n_lines)
     YSnorm = zeros(Float64, n_lines)
 
+    ν0_min = Inf; ν0_max = -Inf      # span of active lines, for the ν-window
     for (k, rl) in enumerate(band.lines)
         ν0  = Float64(rl.ν) + Float64(rl.shift) * p_atm
         γ_D = _CTGAMD * rl.ν * sqrt(T / M_amu)
@@ -968,9 +976,18 @@ function _lm_band_dispersive(ν_grid::WavenumberGrid, band::RelmatBand,
         f_b[k]   = f
         y_b[k]   = y
         YSnorm[k] = Y_band[k] * p_atm * S_T * f * _INV_SQRT_PI
+        ν0_min = min(ν0_min, ν0); ν0_max = max(ν0_max, ν0)
     end
 
-    Threads.@threads for i in 1:n_ν
+    # Band ν-window: only points within ±cutoff of an active line contribute, so
+    # restrict the (threaded) ν loop to that span. The per-line cutoff check below
+    # still guarantees correctness for any window margin.
+    isfinite(ν0_min) || return σ_band          # no active lines
+    i_lo = searchsortedfirst(ν_grid.ν, ν0_min - cutoff)
+    i_hi = searchsortedlast(ν_grid.ν,  ν0_max + cutoff)
+    i_lo > i_hi && return σ_band
+
+    Threads.@threads for i in i_lo:i_hi
         νi  = ν_grid.ν[i]
         acc = 0.0
         for k in 1:n_lines
