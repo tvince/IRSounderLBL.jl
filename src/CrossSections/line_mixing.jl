@@ -760,7 +760,8 @@ Uses the identity `w(x + iy) = erfcx(y − ix)` so the inner loop calls
 the VP_Y dispersive evaluator.
 """
 function compute_vpw_band_xsec(ν_grid::WavenumberGrid, modes::BandModes;
-                                cutoff::Float64 = 25.0)::Vector{Float64}
+                                cutoff::Float64 = 25.0,
+                                x_far::Float64 = _X_FAR)::Vector{Float64}
     n_ν = ν_grid.n
     σ   = zeros(Float64, n_ν)
 
@@ -782,9 +783,19 @@ function compute_vpw_band_xsec(ν_grid::WavenumberGrid, modes::BandModes;
             abs(Δν) > cutoff && continue
             x = Δν * f
             y = im_λ[k] * f
-            wz = erfcx(complex(y, -x))             # w(x + iy)
+            # Far-wing analytic limit: beyond |x|>x_far the Gaussian core has
+            # decayed and w(x+iy) → (y + i·x)/(√π(x²+y²)) — the same asymptotics
+            # the main Voigt path uses (lossless to ~3e-5 at x_far=122). Skips erfcx.
+            if abs(x) > x_far
+                denom = _INV_SQRT_PI / (x*x + y*y)
+                rew = y * denom
+                imw = x * denom
+            else
+                wz = erfcx(complex(y, -x))         # w(x + iy)
+                rew = real(wz); imw = imag(wz)
+            end
             # Re[conj(Aₖ) · w] = A_re · Re w + A_im · Im w
-            acc += A_re[k] * real(wz) + A_im[k] * imag(wz)
+            acc += A_re[k] * rew + A_im[k] * imw
         end
         σ[i] = acc * prefac
     end
@@ -837,11 +848,12 @@ double-counting that band's lines.
 function compute_vpw_band_perturbation(ν_grid::WavenumberGrid, band::RelmatBand,
                                         wtfit::W0B0Table, T::Float64, p_atm::Float64;
                                         cutoff::Float64 = 25.0,
-                                        keep_threshold::Float64 = 1e-4)::Vector{Float64}
+                                        keep_threshold::Float64 = 1e-4,
+                                        x_far::Float64 = _X_FAR)::Vector{Float64}
     modes_full = band_modes(band, wtfit, T, p_atm; keep_threshold=keep_threshold)
-    σ_full     = compute_vpw_band_xsec(ν_grid, modes_full; cutoff=cutoff)
+    σ_full     = compute_vpw_band_xsec(ν_grid, modes_full; cutoff=cutoff, x_far=x_far)
     modes_base = _diagonal_band_modes(band, T, p_atm, modes_full.f)
-    σ_base     = compute_vpw_band_xsec(ν_grid, modes_base; cutoff=cutoff)
+    σ_base     = compute_vpw_band_xsec(ν_grid, modes_base; cutoff=cutoff, x_far=x_far)
     return σ_full .- σ_base
 end
 
@@ -866,7 +878,8 @@ function compute_voigt_vpw_cross_sections(ν_grid::WavenumberGrid,
                                             T::Float64, p_atm::Float64;
                                             whitelist::Set{String},
                                             cutoff::Float64 = 25.0,
-                                            keep_threshold::Float64 = 1e-4)::Vector{Float64}
+                                            keep_threshold::Float64 = 1e-4,
+                                            x_far::Float64 = _X_FAR)::Vector{Float64}
     σ_voigt = compute_voigt_cross_sections(ν_grid, ll_co2, T, p_atm; cutoff=cutoff)
 
     Δσ = zeros(Float64, ν_grid.n)
@@ -880,9 +893,10 @@ function compute_voigt_vpw_cross_sections(ν_grid::WavenumberGrid,
         if band.name in whitelist
             Δσ .+= compute_vpw_band_perturbation(ν_grid, band, wtfit, T, p_atm;
                                                    cutoff=cutoff,
-                                                   keep_threshold=keep_threshold)
+                                                   keep_threshold=keep_threshold,
+                                                   x_far=x_far)
         else
-            Δσ .+= _lm_band_dispersive(ν_grid, band, wtfit, T, p_atm; cutoff=cutoff)
+            Δσ .+= _lm_band_dispersive(ν_grid, band, wtfit, T, p_atm; cutoff=cutoff, x_far=x_far)
         end
     end
 
@@ -918,7 +932,8 @@ the CalcW Y computation.
 # (loops all bands) and `compute_voigt_vpw_cross_sections` (per-band hybrid dispatch).
 function _lm_band_dispersive(ν_grid::WavenumberGrid, band::RelmatBand,
                               wtfit::W0B0Table, T::Float64, p_atm::Float64;
-                              cutoff::Float64 = 25.0)::Vector{Float64}
+                              cutoff::Float64 = 25.0,
+                              x_far::Float64 = _X_FAR)::Vector{Float64}
     n_ν    = ν_grid.n
     σ_band = zeros(Float64, n_ν)
 
@@ -962,8 +977,12 @@ function _lm_band_dispersive(ν_grid::WavenumberGrid, band::RelmatBand,
             YSnorm[k] == 0.0 && continue
             abs(νi - ν0_b[k]) > cutoff && continue
             x  = (νi - ν0_b[k]) * f_b[k]
-            wz = erfcx(complex(y_b[k], -x))
-            acc += YSnorm[k] * imag(wz)
+            yk = y_b[k]
+            # Far-wing analytic limit of Im[w]: x/(√π(x²+y²)) beyond |x|>x_far
+            # (Gaussian core decayed). Same shortcut as the main Voigt path; skips erfcx.
+            imw = abs(x) > x_far ? x * _INV_SQRT_PI / (x*x + yk*yk) :
+                                   imag(erfcx(complex(yk, -x)))
+            acc += YSnorm[k] * imw
         end
         σ_band[i] = acc
     end
@@ -974,7 +993,8 @@ function compute_lm_dispersive_correction(ν_grid::WavenumberGrid,
                                            relmat::HITRANRelmatData,
                                            T::Float64,
                                            p_atm::Float64;
-                                           cutoff::Float64 = 25.0)::Vector{Float64}
+                                           cutoff::Float64 = 25.0,
+                                           x_far::Float64 = _X_FAR)::Vector{Float64}
     σ_disp = zeros(Float64, ν_grid.n)
     for band in relmat.bands
         Int(band.li) > 8 && continue
@@ -982,7 +1002,7 @@ function compute_lm_dispersive_correction(ν_grid::WavenumberGrid,
         llf = Int8(max(band.li, band.lf))
         wtfit = get(relmat.wtfit, (lli, llf), nothing)
         wtfit === nothing && continue
-        σ_disp .+= _lm_band_dispersive(ν_grid, band, wtfit, T, p_atm; cutoff=cutoff)
+        σ_disp .+= _lm_band_dispersive(ν_grid, band, wtfit, T, p_atm; cutoff=cutoff, x_far=x_far)
     end
     return σ_disp
 end
@@ -1009,10 +1029,11 @@ function compute_voigt_lm_cross_sections(ν_grid::WavenumberGrid,
                                           T::Float64,
                                           p_atm::Float64;
                                           cutoff::Float64 = 25.0,
-                                          method::VoigtMethod = FullFaddeeva)::Vector{Float64}
+                                          method::VoigtMethod = FullFaddeeva,
+                                          x_far::Float64 = _X_FAR)::Vector{Float64}
     σ_voigt = compute_voigt_cross_sections(ν_grid, ll_co2, T, p_atm;
-                                            cutoff=cutoff, method=method)
+                                            cutoff=cutoff, method=method, x_far=x_far)
     σ_disp  = compute_lm_dispersive_correction(ν_grid, relmat, T, p_atm;
-                                                cutoff=cutoff)
+                                                cutoff=cutoff, x_far=x_far)
     return max.(σ_voigt .+ σ_disp, 0.0)
 end

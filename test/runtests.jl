@@ -548,7 +548,9 @@ using IRSounderLBL
         modes = IRSounderLBL.band_modes(band, WT(), T, p_atm)
 
         ν_grid = wavenumber_grid(699.5, 700.5, 0.005)
-        σ_vpw  = IRSounderLBL.compute_vpw_band_xsec(ν_grid, modes; cutoff=10.0)
+        # x_far=Inf: this test's reference uses exact erfcx everywhere, so disable
+        # the far-wing shortcut to keep the 1e-12 machine-precision comparison valid.
+        σ_vpw  = IRSounderLBL.compute_vpw_band_xsec(ν_grid, modes; cutoff=10.0, x_far=Inf)
 
         # Reference: pure Voigt sum at band-uniform γ_D (same as modes.f)
         γ_L     = 0.07 * p_atm   # T = T_REF
@@ -572,6 +574,51 @@ using IRSounderLBL
         ν_far = wavenumber_grid(800.0, 800.5, 0.005)
         σ_far = IRSounderLBL.compute_vpw_band_xsec(ν_far, modes; cutoff=10.0)
         @test all(==(0.0), σ_far)
+    end
+
+    # ── LM far-wing Lorentzian/dispersion shortcut (x_far) ────────────────
+    @testset "Line mixing — far-wing shortcut (x_far) is lossless" begin
+        # Past |x|=x_far both LM evaluators replace the complex erfcx with the
+        # analytic w(z) limit (Re w = y/√π(x²+y²), Im w = x/√π(x²+y²)). Gate:
+        # the default x_far=_X_FAR must reproduce exact Faddeeva (x_far=Inf) to
+        # <1e-6·peak, while x_far=0 (analytic everywhere, incl. core) must differ.
+        RL = IRSounderLBL.RelmatLine
+        RB = IRSounderLBL.RelmatBand
+        WT = IRSounderLBL.W0B0Table
+        XF = IRSounderLBL._X_FAR
+
+        # Two coupled Q lines: a populated qq entry gives nonzero off-diagonal W,
+        # so VP_W amplitudes go complex (Re+Im branches) AND VP_Y Y is nonzero.
+        # Small p + modest γ_air keep y≈O(5) so a real Gaussian core survives and
+        # the x_far=0 "branch live" check has signal.
+        line1 = RL(Int8(1), 667.00, Int16(20), Int8(0), 0.03, Float32(0.7), Float32(0.0),
+                   300.0, 1.0, 1.0, 1.0)
+        line2 = RL(Int8(1), 667.05, Int16(18), Int8(0), 0.03, Float32(0.7), Float32(0.0),
+                   260.0, 1.0, 0.8, 1.0)
+        band  = RB("TESTQ", Int8(1), Int8(1), Int8(1), 667.0, 667.05, [line1, line2])
+        wt = WT(); wt.qq[(20, 18)] = (log(0.03), 0.5)   # one off-diagonal coupling
+
+        T, p_atm, cutoff = 250.0, 0.1, 25.0
+        g = wavenumber_grid(665.0, 669.0, 0.002)        # ±2 cm⁻¹ ≫ x_far window
+
+        # VP_W evaluator (exercises Re + Im far-wing via complex amplitudes)
+        modes = IRSounderLBL.band_modes(band, wt, T, p_atm)
+        @test any(a -> imag(a) != 0.0, modes.amplitudes)            # coupling present
+        σw_exact = IRSounderLBL.compute_vpw_band_xsec(g, modes; cutoff=cutoff, x_far=Inf)
+        σw_optA  = IRSounderLBL.compute_vpw_band_xsec(g, modes; cutoff=cutoff, x_far=XF)
+        σw_lor   = IRSounderLBL.compute_vpw_band_xsec(g, modes; cutoff=cutoff, x_far=0.0)
+        pkw = maximum(abs, σw_exact)
+        @test maximum(abs.(σw_optA .- σw_exact)) < 1e-5 * pkw        # lossless (matches Option-A gate)
+        @test maximum(abs.(σw_lor  .- σw_exact)) > 1e-3 * pkw        # branch live
+
+        # VP_Y dispersive kernel (purely Im[w] → gates the Im far-wing form)
+        σy_exact = IRSounderLBL._lm_band_dispersive(g, band, wt, T, p_atm; cutoff=cutoff, x_far=Inf)
+        σy_optA  = IRSounderLBL._lm_band_dispersive(g, band, wt, T, p_atm; cutoff=cutoff, x_far=XF)
+        σy_lor   = IRSounderLBL._lm_band_dispersive(g, band, wt, T, p_atm; cutoff=cutoff, x_far=0.0)
+        pky = maximum(abs, σy_exact)
+        @test pky > 0                                                # nonzero dispersive signal
+        @test maximum(abs.(σy_optA .- σy_exact)) < 1e-5 * pky        # lossless (matches Option-A gate)
+        @test maximum(abs.(σy_lor  .- σy_exact)) > 1e-3 * pky        # branch live
     end
 
     # ── JLD2 linelist cache ───────────────────────────────────────────────
