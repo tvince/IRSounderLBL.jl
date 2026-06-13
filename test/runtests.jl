@@ -679,6 +679,43 @@ using IRSounderLBL
         @test IRSounderLBL._band_eff_strength(bWeak_iso2) == sW
     end
 
+    # ── species generalization (CH4 plumbing) ─────────────────────────────
+    @testset "Line mixing — species generalization (CH4 plumbing)" begin
+        RL = IRSounderLBL.RelmatLine
+        RB = IRSounderLBL.RelmatBand
+        WT = IRSounderLBL.W0B0Table
+        RD = IRSounderLBL.HITRANRelmatData
+
+        # Per-species mass/abundance lookups select the right molecule; CO2 unchanged.
+        @test IRSounderLBL._lm_mass_amu(6, 1)  == 16.031300       # ¹²CH₄
+        @test IRSounderLBL._lm_iso_abund(6, 1) == 0.988274
+        @test IRSounderLBL._lm_mass_amu(2, 1)  == 43.98983        # CO2 unchanged
+        @test IRSounderLBL._lm_mass_amu(99, 1) == 44.0            # unknown ⇒ fallback
+
+        # Back-compat constructors default to CO2 (molecule 2 / species CO2).
+        bco2 = RB("C", Int8(1), Int8(1), Int8(1), 700.0, 700.1, RL[])
+        @test bco2.molecule == Int8(2)
+        @test RD(RelmatBand[], Dict{NTuple{2,Int8}, WT}()).species == CO2
+
+        # A CH4 ν₄ Q-branch band (molecule 6) routes Q(T) through CH4 TIPS and runs
+        # the dispersive kernel end to end — finite, nonzero LM perturbation.
+        l1 = RL(Int8(1), 1306.00, Int16(6), Int8(0), 0.05, Float32(0.75), Float32(0.0),
+                220.0, 1.0, 1.0, 1.0)
+        l2 = RL(Int8(1), 1306.05, Int16(5), Int8(0), 0.05, Float32(0.75), Float32(0.0),
+                200.0, 1.0, 0.9, 1.0)
+        bch4 = RB("CH4Q", Int8(1), Int8(1), Int8(1), 1306.0, 1306.05, [l1, l2], Int8(6))
+        wt = WT(); wt.qq[(6, 5)] = (log(0.04), 0.5)
+        relmat = RD([bch4], Dict((Int8(1), Int8(1)) => wt), CH4)
+
+        g = wavenumber_grid(1304.0, 1308.0, 0.01)
+        σ = IRSounderLBL.compute_lm_dispersive_correction(g, relmat, 250.0, 0.5)
+        @test all(isfinite, σ)
+        @test maximum(abs.(σ)) > 0.0
+
+        # Dispatch gate keys on the relmat's species, not a hardcoded CO2.
+        @test IRSounderLBL.VPYLineMixing(relmat).data.species == CH4
+    end
+
     # ── JLD2 linelist cache ───────────────────────────────────────────────
     @testset "Linelist cache (JLD2)" begin
         # 67-char .par records with exact fixed-width columns the parser expects.

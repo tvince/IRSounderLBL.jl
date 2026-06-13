@@ -54,7 +54,11 @@ struct RelmatBand
     ν_min::Float64
     ν_max::Float64
     lines::Vector{RelmatLine}
+    molecule::Int8    # HITRAN molecule id (2=CO2, 6=CH4) — selects mass/abundance/Q(T)
 end
+# Back-compat: existing 7-arg call sites (all CO2) default molecule=2.
+RelmatBand(name, li, lf, isot, ν_min, ν_max, lines) =
+    RelmatBand(name, li, lf, isot, ν_min, ν_max, lines, Int8(2))
 
 # W0/B0 parameters keyed by (Ji, Jip) for each of 9 branch-pair combinations.
 # W(T) = exp(W0) × (T/T0)^B0  [off-diagonal element in cm⁻¹/atm]
@@ -76,7 +80,10 @@ struct HITRANRelmatData
     bands::Vector{RelmatBand}
     # key: (lli, llf) = (min(li,lf), max(li,lf))
     wtfit::Dict{NTuple{2,Int8}, W0B0Table}
+    species::GasSpecies   # which gas this relmat applies to (dispatch gate)
 end
+# Back-compat: existing 2-arg call sites (all CO2) default species=CO2.
+HITRANRelmatData(bands, wtfit) = HITRANRelmatData(bands, wtfit, CO2)
 
 # ── Line-mixing dispatch wrappers ─────────────────────────────────────────────
 #
@@ -175,7 +182,7 @@ end
 
 function _species_cross_section(lm::VPYLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
                                  vmr_self::Float64, cutoff::Float64, backend)
-    sp == CO2 || return compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
+    sp == lm.data.species || return compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                                       vmr_self=vmr_self, cutoff=cutoff, backend=backend)
     compute_voigt_lm_cross_sections(ν_grid, ll, lm.data, T, p_atm; cutoff=cutoff,
                                      min_band_strength=lm.min_band_strength)
@@ -183,7 +190,7 @@ end
 
 function _species_cross_section(lm::VPWLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
                                  vmr_self::Float64, cutoff::Float64, backend)
-    sp == CO2 || return compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
+    sp == lm.data.species || return compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                                       vmr_self=vmr_self, cutoff=cutoff, backend=backend)
     compute_voigt_vpw_cross_sections(ν_grid, ll, lm.data, T, p_atm;
                                        whitelist=lm.whitelist, cutoff=cutoff,
@@ -433,7 +440,7 @@ function _build_W_matrix(band::RelmatBand, wtfit::W0B0Table, T::Float64)
     lf = Int(band.lf)
 
     iso = Int(band.isot == 10 ? 10 : band.isot)
-    RatioPart = partition_function(2, iso, T_REF) / partition_function(2, iso, T)
+    RatioPart = partition_function(Int(band.molecule), iso, T_REF) / partition_function(Int(band.molecule), iso, T)
     PopuT = Vector{Float64}(undef, n)
     for (i, line) in enumerate(band.lines)
         PopuT[i] = line.PopuT0 * RatioPart *
@@ -580,7 +587,8 @@ function _calc_W_and_Y(band::RelmatBand, wtfit::W0B0Table, T::Float64)::Vector{F
     return Y
 end
 
-# ── CO2 isotopologue molar masses (amu) for Doppler width ────────────────────
+# ── Per-species isotopologue molar masses (amu) for the Doppler width ────────
+# Keyed by HITRAN molecule id, then isotopologue id.
 
 const _CO2_MASS_AMU = Dict(
     1 => 43.98983, 2 => 44.99318, 3 => 45.99398,
@@ -588,14 +596,29 @@ const _CO2_MASS_AMU = Dict(
     7 => 47.99832, 8 => 47.00134, 9 => 48.00196,
     10=> 47.00427,
 )
+# CH4 isotopologue masses (amu): 1=¹²CH₄, 2=¹³CH₄, 3=¹²CH₃D, 4=¹³CH₃D.
+const _CH4_MASS_AMU = Dict(
+    1 => 16.031300, 2 => 17.034655, 3 => 17.037475, 4 => 18.040830,
+)
+const _LM_MASS_AMU = Dict(2 => _CO2_MASS_AMU, 6 => _CH4_MASS_AMU)
+
 const _CTGAMD = 3.5812e-7   # Doppler HWHM constant: γ_D = _CTGAMD × ν₀ × √(T/M_amu)
 
-# CO2 natural isotopologue abundances (HITRAN); used to rank bands by atmospheric impact.
+# Natural isotopologue abundances (HITRAN); used to rank bands by atmospheric impact.
 const _CO2_ISO_ABUND = Dict(
     1 => 0.984204,  2 => 0.011057,  3 => 0.003947,  4 => 0.000734,
     5 => 4.434e-5,  6 => 1.625e-5,  7 => 3.957e-6,  8 => 1.4717e-7,
     9 => 6.554e-8, 10 => 0.0,
 )
+const _CH4_ISO_ABUND = Dict(
+    1 => 0.988274, 2 => 0.0111031, 3 => 0.000615751, 4 => 6.91785e-6,
+)
+const _LM_ISO_ABUND = Dict(2 => _CO2_ISO_ABUND, 6 => _CH4_ISO_ABUND)
+
+# Per-species lookups. Unknown molecule ⇒ scalar default (NOT another species'
+# table); unknown isotopologue within a known molecule ⇒ scalar default.
+_lm_mass_amu(molecule, iso)  = get(get(_LM_MASS_AMU,  Int(molecule), Dict{Int,Float64}()), Int(iso), 44.0)
+_lm_iso_abund(molecule, iso) = get(get(_LM_ISO_ABUND, Int(molecule), Dict{Int,Float64}()), Int(iso), 1e-8)
 
 """
     default_vpw_whitelist(data; n_top=5, isotopes=nothing, ν_window=nothing) -> Set{String}
@@ -657,7 +680,7 @@ function default_vpw_whitelist(data::HITRANRelmatData;
         scored = Tuple{String, Float64}[]
         for band in data.bands
             in_window(band) || continue
-            abund = get(_CO2_ISO_ABUND, Int(band.isot), 1e-8)
+            abund = _lm_iso_abund(band.molecule, band.isot)
             push!(scored, (band.name, band_S(band) * abund))
         end
         sort!(scored, by=x->x[2], rev=true)
@@ -762,7 +785,7 @@ function band_modes(band::RelmatBand, wtfit::W0B0Table, T::Float64,
     A = a .* b
 
     iso      = Int(band.isot == 10 ? 10 : band.isot)
-    M_amu    = get(_CO2_MASS_AMU, iso, 44.0)
+    M_amu    = _lm_mass_amu(band.molecule, iso)
     ν_center = sum(ν₀) / n
     γ_D      = _CTGAMD * ν_center * sqrt(T / M_amu)
     f        = _SQRT_LN2 / max(γ_D, 1e-10)
@@ -865,7 +888,7 @@ function _diagonal_band_modes(band::RelmatBand, T::Float64, p_atm::Float64,
     amplitudes = Vector{ComplexF64}(undef, n)
 
     iso       = Int(band.isot == 10 ? 10 : band.isot)
-    RatioPart = partition_function(2, iso, T_REF) / partition_function(2, iso, T)
+    RatioPart = partition_function(Int(band.molecule), iso, T_REF) / partition_function(Int(band.molecule), iso, T)
 
     for (i, line) in enumerate(band.lines)
         γ_L = Float64(line.gV_air) * (_T0_LM / T)^Float64(line.n_air) * p_atm
@@ -991,9 +1014,9 @@ function _lm_band_dispersive(ν_grid::WavenumberGrid, band::RelmatBand,
     Y_band  = _calc_W_and_Y(band, wtfit, T)
     n_lines = length(band.lines)
 
-    M_amu        = get(_CO2_MASS_AMU, Int(band.isot), 44.0)
+    M_amu        = _lm_mass_amu(band.molecule, Int(band.isot))
     iso          = Int(band.isot == 10 ? 10 : band.isot)
-    Q_ratio_band = partition_function(2, iso, T_REF) / partition_function(2, iso, T)
+    Q_ratio_band = partition_function(Int(band.molecule), iso, T_REF) / partition_function(Int(band.molecule), iso, T)
 
     ν0_b   = Vector{Float64}(undef, n_lines)
     f_b    = Vector{Float64}(undef, n_lines)
