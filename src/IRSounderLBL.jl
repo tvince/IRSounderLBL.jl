@@ -27,6 +27,7 @@ include("CrossSections/line_mixing.jl")
 include("Solver/planck.jl")
 include("Solver/transmittance.jl")
 include("Solver/schwarzschild.jl")
+include("Solver/schwarzschild_jacobian.jl")
 
 # Sensor
 include("Sensor/geometry.jl")
@@ -75,7 +76,7 @@ export BandModes, band_modes, compute_vpw_band_xsec,
 # Solver exports
 export planck_radiance, brightness_temperature
 export level_transmittances
-export schwarzschild_rte
+export schwarzschild_rte, schwarzschild_rte_jacobian
 
 # Sensor exports
 export ViewingGeometry, airmass_factor

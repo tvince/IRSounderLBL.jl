@@ -62,6 +62,33 @@ Taylor for s < `od_lo` ≈ 0.06: f(s) ≈ s/6 − s³/360 + …
     return 1.0 - 2.0 * (ems / (ems - 1.0) + 1.0 / s)
 end
 
+"""
+    _lit_correction_deriv(s) -> Float64
+
+Derivative f'(s) of the Toon (1989) linear-in-τ correction `_lit_correction`.
+Series for s < 1e-4: f'(s) = 1/2 − 2s/3 + 3s²/8 − … (matches the f series term-wise).
+"""
+@inline function _lit_correction_deriv(s::Float64)::Float64
+    s < 1e-4 && return 0.5 - s * (2.0/3.0 - s * 0.375)
+    ems = exp(-s)
+    return (ems * (s + 1.0) - 1.0) / (s * s) + ems
+end
+
+"""
+    _cim_correction_deriv(s) -> Float64
+
+Derivative f'(s) of the Clough–Iacono–Moncet correction `_cim_correction`.
+Consistency note: the forward `_cim_correction` series branch is the 1-term `s/6`,
+whose exact derivative is the constant `1/6` — so this returns `1/6` below the same
+0.06 threshold (matching the *implemented* forward function, not the truer
+`1/6 − s²/120` of the full series). The `s²/120` term is ≲3e-5 at the branch.
+"""
+@inline function _cim_correction_deriv(s::Float64)::Float64
+    s < 0.06 && return 1.0 / 6.0   # d/ds(s/6); consistent with the forward series
+    w = exp(-s)
+    return 2.0 / (s * s) - 2.0 * w / (w - 1.0)^2
+end
+
 # ── Primary solver ────────────────────────────────────────────────────────────
 
 """

@@ -881,4 +881,83 @@ using IRSounderLBL
                        rtol=1e-3, atol=1e-3)
     end
 
+    # ── Jacobian Phase 1: analytic RTE Jacobian vs finite differences ────────
+    @testset "Jacobian — source-correction derivatives" begin
+        cim  = IRSounderLBL._cim_correction
+        cimd = IRSounderLBL._cim_correction_deriv
+        lit  = IRSounderLBL._lit_correction
+        litd = IRSounderLBL._lit_correction_deriv
+        h = 1e-6
+        # Points either side of the series/closed-form branches (cim 0.06, lit
+        # 1e-4) — deliberately NOT straddling a branch with the ±h step, where the
+        # forward function's tiny series/closed-form mismatch would corrupt the FD.
+        for s in (0.02, 0.05, 0.059, 0.07, 0.1, 0.5, 1.0, 3.0, 10.0)
+            @test cimd(s) ≈ (cim(s + h) - cim(s - h)) / (2h) rtol=1e-5
+            @test litd(s) ≈ (lit(s + h) - lit(s - h)) / (2h) rtol=1e-5
+        end
+    end
+
+    @testset "Jacobian — analytic RTE Jacobian (vs FD, :cim & :toon)" begin
+        g     = wavenumber_grid(700.0, 740.0, 5.0)              # 9 channels
+        n_lay = 5
+        T_lev = [300.0, 288.0, 272.0, 258.0, 244.0, 230.0]     # surface-first
+        T_sfc = 305.0
+        ε     = 0.97
+        μ     = 0.85
+        p_lev = [1000.0, 700.0, 450.0, 250.0, 100.0, 20.0]
+        τ     = [0.2 + 0.15*k + 0.05*i for i in 1:g.n, k in 1:n_lay]  # cols differ
+
+        for src in (:cim, :toon)
+            Tave = src == :cim ?
+                [IRSounderLBL.cg_temperature_mass(T_lev[k], T_lev[k+1], p_lev[k], p_lev[k+1])
+                 for k in 1:n_lay] : nothing
+            run(τ2, Tl2, Ts2, ε2) = schwarzschild_rte(g, τ2, Tl2, Ts2;
+                μ=μ, ε_sfc=ε2, source_function=src,
+                T_ave = src == :cim ?
+                    [IRSounderLBL.cg_temperature_mass(Tl2[k], Tl2[k+1], p_lev[k], p_lev[k+1])
+                     for k in 1:n_lay] : nothing)
+
+            I, dτ, dTl, dTs, dε = schwarzschild_rte_jacobian(g, τ, T_lev, T_sfc;
+                μ=μ, ε_sfc=ε, source_function=src, p_levels=p_lev)
+
+            # Forward radiance matches the non-Jacobian solver.
+            @test I ≈ run(τ, T_lev, T_sfc, ε) rtol=1e-12
+
+            # dI/dτ (central FD per layer)
+            hτ = 1e-6
+            for m in 1:n_lay
+                τp = copy(τ); τp[:, m] .+= hτ
+                τm = copy(τ); τm[:, m] .-= hτ
+                fd = (run(τp, T_lev, T_sfc, ε) .- run(τm, T_lev, T_sfc, ε)) ./ (2hτ)
+                @test maximum(abs.(fd .- dτ[:, m])) < 1e-6
+            end
+
+            # dI/dT_lev (central FD per level)
+            hT = 1e-3
+            for j in 1:(n_lay + 1)
+                Tp = copy(T_lev); Tp[j] += hT
+                Tm = copy(T_lev); Tm[j] -= hT
+                fd = (run(τ, Tp, T_sfc, ε) .- run(τ, Tm, T_sfc, ε)) ./ (2hT)
+                @test maximum(abs.(fd .- dTl[:, j])) < 1e-7
+            end
+
+            # dI/dT_sfc and dI/dε
+            fds = (run(τ, T_lev, T_sfc + 1e-3, ε) .- run(τ, T_lev, T_sfc - 1e-3, ε)) ./ 2e-3
+            @test maximum(abs.(fds .- dTs)) < 1e-7
+            fde = (run(τ, T_lev, T_sfc, ε + 1e-5) .- run(τ, T_lev, T_sfc, ε - 1e-5)) ./ 2e-5
+            @test maximum(abs.(fde .- dε)) < 1e-7
+        end
+
+        # Isothermal Kirchhoff: dI/dτ ≡ 0 (adding opacity in an isothermal column
+        # at the surface T cannot change TOA radiance).
+        T_iso = fill(285.0, n_lay + 1)
+        _, dτ0, _, _, _ = schwarzschild_rte_jacobian(g, τ, T_iso, 285.0;
+            μ=μ, ε_sfc=1.0, source_function=:cim, p_levels=p_lev)
+        @test maximum(abs.(dτ0)) < 1e-9
+
+        # :cim without p_levels errors.
+        @test_throws ErrorException schwarzschild_rte_jacobian(g, τ, T_lev, T_sfc;
+            source_function=:cim)
+    end
+
 end
