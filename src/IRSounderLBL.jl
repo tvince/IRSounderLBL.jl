@@ -36,6 +36,10 @@ include("Sensor/iasi.jl")
 # Parallel
 include("Parallel/strategy.jl")
 
+# Estimation (Jacobians / retrieval)
+include("Estimation/state_vector.jl")
+include("Estimation/jacobian_fd.jl")
+
 # Utils exports
 export WavenumberGrid, wavenumber_grid
 
@@ -84,5 +88,10 @@ export iasi_forward_model
 
 # Parallel exports
 export ComputeBackend, detect_backend
+
+# Estimation exports
+export StateVectorSpec, pack_state, unpack_state, state_labels
+export Jacobian, finite_difference_jacobian, default_fd_steps, column
+export dB_dT
 
 end # module IRSounderLBL

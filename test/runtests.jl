@@ -768,4 +768,117 @@ using IRSounderLBL
         end
     end
 
+    # ── Jacobian Phase 0: state vector + finite-difference reference harness ──
+    @testset "Jacobian — state vector layout & pack/unpack" begin
+        spec = StateVectorSpec(4, [CO2, H2O];
+                               include_temperature=true, include_tsfc=true,
+                               include_emissivity=true, log_vmr=true)
+        # Layout: 4 T + 4 CO2 + 4 H2O + T_sfc + ε = 14
+        @test spec.n == 14
+        @test length(spec) == 14
+        @test spec.temp_range == 1:4
+        @test spec.vmr_ranges[1] == (CO2 => 5:8)
+        @test spec.vmr_ranges[2] == (H2O => 9:12)
+        @test spec.tsfc_index == 13
+        @test spec.emis_index == 14
+
+        labels = state_labels(spec)
+        @test length(labels) == 14
+        @test labels[1] == "T[1]"
+        @test labels[5] == "logVMR_CO₂[1]"
+        @test labels[13] == "T_sfc"
+        @test labels[14] == "emissivity"
+
+        prof = AtmosphericProfile(
+            [1000.0, 700.0, 400.0, 100.0],            # hPa
+            [288.0, 270.0, 250.0, 230.0],             # K
+            [0.0, 3.0, 7.0, 16.0],                    # km
+            Dict(CO2 => fill(4.0e-4, 4), H2O => [1.0e-2, 5.0e-3, 1.0e-3, 1.0e-4]))
+
+        x = pack_state(spec, prof; T_sfc=295.0, ε_sfc=0.98)
+        @test x[spec.temp_range] == prof.temperature
+        @test x[5:8] ≈ log.(fill(4.0e-4, 4))          # log-VMR storage
+        @test x[13] == 295.0
+        @test x[14] == 0.98
+
+        # Round-trip: unpack reproduces the state-bearing fields exactly.
+        p2, Ts2, ε2 = unpack_state(spec, x, prof)
+        @test p2.temperature == prof.temperature
+        @test p2.vmr[CO2] ≈ prof.vmr[CO2]
+        @test p2.vmr[H2O] ≈ prof.vmr[H2O]
+        @test p2.pressure == prof.pressure            # fixed field carried from base
+        @test Ts2 == 295.0
+        @test ε2 == 0.98
+
+        # T_sfc not in state ⇒ follows (perturbed) T[1]; ε not in state ⇒ 1.0.
+        spec2 = StateVectorSpec(4, GasSpecies[]; include_tsfc=false,
+                                include_emissivity=false)
+        @test spec2.n == 4
+        x2 = pack_state(spec2, prof)
+        x2[1] = 301.0
+        _, Ts3, ε3 = unpack_state(spec2, x2, prof)
+        @test Ts3 == 301.0
+        @test ε3 == 1.0
+    end
+
+    @testset "Jacobian — finite-difference harness (synthetic CO₂ band)" begin
+        # Synthetic, data-free: a couple of CO₂ lines in a narrow window, a tiny
+        # profile, ILS/continuum off so the harness exercises only LBL + RTE.
+        mk(ν0, S) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                               Float32(0.08), Float32(0.10), 250.0,
+                               Float32(0.75), Float32(0.0))
+        ll = HITRANLinelist([mk(700.5, 3.0e-23), mk(702.0, 1.0e-23)])
+        linelists = Dict(CO2 => ll)
+
+        prof = AtmosphericProfile(
+            [1000.0, 600.0, 200.0],
+            [288.0, 255.0, 225.0],
+            [0.0, 4.0, 12.0],
+            Dict(CO2 => fill(4.0e-4, 3)))
+
+        # Narrow 6 cm⁻¹ band at 0.5 cm⁻¹ sampling (13 channels).
+        iasi = IASIInstrument(699.0, 705.0, 0.5, 13, 2.0, 0.5)
+        fm = (iasi=iasi, apply_continuum=false, with_ils=false)
+
+        spec = StateVectorSpec(3, [CO2]; include_temperature=true,
+                               include_tsfc=true, include_emissivity=true)
+        @test spec.n == 3 + 3 + 1 + 1          # T + CO2 + T_sfc + ε
+
+        jac = finite_difference_jacobian(prof, linelists, spec;
+                                         T_sfc=290.0, ε_sfc=0.98,
+                                         observable=:bt, fm_kwargs=fm)
+
+        @test size(jac.K) == (13, spec.n)
+        @test all(isfinite, jac.K)
+        @test length(jac.ν) == 13
+        @test length(jac.y0) == 13
+
+        # Identify the most transparent channel (warmest BT ≈ closest to surface).
+        i_window = argmax(jac.y0)
+        # Most opaque (coldest) channel sits on a line core.
+        i_line   = argmin(jac.y0)
+
+        # ∂BT/∂T_sfc in a window channel ≈ 1 (surface fully seen through thin air).
+        dTsfc = column(jac, "T_sfc")
+        @test 0.7 < dTsfc[i_window] < 1.05
+        @test all(dTsfc .>= -1e-6)            # warming the surface never cools any channel
+
+        # ∂BT/∂(log VMR_CO₂): adding absorber over a colder atmosphere cools the
+        # line-core channel ⇒ the summed CO₂ column sensitivity there is negative.
+        co2_block = jac.K[:, spec.vmr_ranges[1][2]]
+        @test sum(co2_block[i_line, :]) < 0.0
+
+        # Emissivity sensitivity is positive in the window (more surface emission).
+        dε = column(jac, "emissivity")
+        @test dε[i_window] > 0.0
+
+        # Central vs forward differences agree to FD truncation order on T_sfc.
+        jac_fwd = finite_difference_jacobian(prof, linelists, spec;
+                                             T_sfc=290.0, ε_sfc=0.98,
+                                             observable=:bt, method=:forward,
+                                             fm_kwargs=fm)
+        @test isapprox(column(jac_fwd, "T_sfc")[i_window], dTsfc[i_window];
+                       rtol=1e-3, atol=1e-3)
+    end
+
 end
