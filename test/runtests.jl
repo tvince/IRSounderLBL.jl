@@ -960,4 +960,95 @@ using IRSounderLBL
             source_function=:cim)
     end
 
+    # ── Jacobian Phase 2: analytic VMR (+ surface) Jacobian vs FD harness ─────
+    @testset "Jacobian — CG column-VMR gradient & ∂BT/∂R" begin
+        cg   = IRSounderLBL.cg_column_vmr
+        grad = IRSounderLBL._cg_column_vmr_grad
+        # Closed-form ∂(CG column VMR)/∂(level VMR) vs scalar central FD.
+        for (v1, v2, p1, p2) in [(4.0e-4, 4.0e-4, 1000.0, 600.0),
+                                 (1.0e-2, 3.0e-3, 1000.0, 600.0),
+                                 (3.0e-3, 1.0e-2, 600.0, 200.0),
+                                 (5.0e-4, 4.9e-4, 850.0, 700.0)]
+            g1, g2 = grad(v1, v2, p1, p2)
+            h1 = v1 * 1e-6; h2 = v2 * 1e-6
+            @test g1 ≈ (cg(v1+h1, v2, p1, p2) - cg(v1-h1, v2, p1, p2)) / (2h1) rtol=1e-6
+            @test g2 ≈ (cg(v1, v2+h2, p1, p2) - cg(v1, v2-h2, p1, p2)) / (2h2) rtol=1e-6
+        end
+        # Well-mixed limit reduces to the cg_temperature_mass weight, sums to 1.
+        fr = IRSounderLBL._cg_mass_frac(1000.0, 600.0)
+        g1, g2 = grad(4.0e-4, 4.0e-4, 1000.0, 600.0)
+        @test g1 ≈ 1.0 - fr
+        @test g2 ≈ fr
+        @test g1 + g2 ≈ 1.0
+        # Nonpositive VMR → forward returns ½(v1+v2) → gradient (0.5, 0.5).
+        @test all(grad(0.0, 4.0e-4, 1000.0, 600.0) .≈ (0.5, 0.5))
+        # ∂BT/∂R vs FD of the inverse Planck function.
+        for (ν, T) in [(700.0, 250.0), (2300.0, 290.0)]
+            R = planck_radiance(ν, T); h = R * 1e-6
+            @test IRSounderLBL._dBT_dR(ν, R) ≈
+                (brightness_temperature(ν, R+h) - brightness_temperature(ν, R-h)) / (2h) rtol=1e-6
+        end
+    end
+
+    @testset "Jacobian — analytic VMR Jacobian (vs FD harness)" begin
+        mk(ν0, S) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                               Float32(0.08), Float32(0.10), 250.0,
+                               Float32(0.75), Float32(0.0))
+        ll = HITRANLinelist([mk(700.5, 3.0e-23), mk(702.0, 1.0e-23)])
+        linelists = Dict(CO2 => ll)
+        iasi = IASIInstrument(699.0, 705.0, 0.5, 13, 2.0, 0.5)
+
+        build(nlev) = let p = collect(range(1000.0, 200.0; length=nlev))
+            T = 288.0 .+ (225.0 - 288.0) .* (1000.0 .- p) ./ 800.0
+            z = (1000.0 .- p) ./ 66.0
+            AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.0e-4, nlev)))
+        end
+        # VMR-block max |Δ| between analytic and FD Jacobians at a given layering.
+        function vmr_block_diff(nlev)
+            prof = build(nlev)
+            spec = StateVectorSpec(nlev, [CO2]; include_temperature=false,
+                                   include_tsfc=true, include_emissivity=true)
+            fm = (iasi=iasi, apply_continuum=false, with_ils=true)
+            fd = finite_difference_jacobian(prof, linelists, spec;
+                                            T_sfc=290.0, ε_sfc=0.98,
+                                            observable=:bt, fm_kwargs=fm)
+            an = analytic_jacobian(prof, linelists, spec; iasi=iasi,
+                                   T_sfc=290.0, ε_sfc=0.98, observable=:bt,
+                                   apply_continuum=false, with_ils=true)
+            co2 = spec.vmr_ranges[1][2]
+            return (fd=fd, an=an, spec=spec,
+                    vmr = maximum(abs.(an.K[:, co2] .- fd.K[:, co2])),
+                    rel = maximum(abs.(an.K[:, co2] .- fd.K[:, co2])) /
+                          (maximum(abs.(fd.K[:, co2])) + 1e-30))
+        end
+
+        r6  = vmr_block_diff(6)
+        r11 = vmr_block_diff(11)
+
+        # Radiance/BT reproduced to round-off (analytic forward rebuild ≡ FM).
+        @test maximum(abs.(r6.an.y0 .- r6.fd.y0)) < 1e-9
+
+        # Exact columns: T_sfc and ε have no τ-coupling, match FD to FD precision.
+        @test maximum(abs.(r6.an.K[:, r6.spec.tsfc_index] .-
+                           r6.fd.K[:, r6.spec.tsfc_index])) < 1e-4
+        @test maximum(abs.(r6.an.K[:, r6.spec.emis_index] .-
+                           r6.fd.K[:, r6.spec.emis_index])) < 1e-4
+
+        # Dominant VMR term: agrees to <1% with ILS on; the residual is the
+        # deferred §2.1 CG-pressure/temperature coupling, which scales O(Δz) and
+        # so must *shrink* under finer layering (proof it is physics, not a bug).
+        @test r6.rel  < 0.01
+        @test r11.rel < r6.rel
+
+        # VMR sensitivity sign: adding CO₂ over a colder atmosphere cools the
+        # band, so the summed column response is negative on opaque channels.
+        i_line = argmin(r6.an.y0)
+        co2blk = r6.an.K[:, r6.spec.vmr_ranges[1][2]]
+        @test sum(co2blk[i_line, :]) < 0.0
+
+        # include_temperature specs are rejected (Phase 3).
+        spec_T = StateVectorSpec(6, [CO2]; include_temperature=true)
+        @test_throws ErrorException analytic_jacobian(build(6), linelists, spec_T)
+    end
+
 end

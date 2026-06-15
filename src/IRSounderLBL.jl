@@ -40,6 +40,7 @@ include("Parallel/strategy.jl")
 # Estimation (Jacobians / retrieval)
 include("Estimation/state_vector.jl")
 include("Estimation/jacobian_fd.jl")
+include("Estimation/vmr_jacobian.jl")
 
 # Utils exports
 export WavenumberGrid, wavenumber_grid
@@ -93,6 +94,7 @@ export ComputeBackend, detect_backend
 # Estimation exports
 export StateVectorSpec, pack_state, unpack_state, state_labels
 export Jacobian, finite_difference_jacobian, default_fd_steps, column
+export analytic_jacobian
 export dB_dT
 
 end # module IRSounderLBL
