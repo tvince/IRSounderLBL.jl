@@ -45,3 +45,22 @@ function Q_ratio(mol_id::Int, iso_id::Int, T::Float64)
     Q_ref = _tips_lookup(vec, T_REF)
     return Q_ref / Q_T
 end
+
+"""
+    partition_derivative(mol_id, iso_id, T) -> Float64
+
+`dQ/dT` of the TIPS-2024 partition sum. The forward `_tips_lookup` is piecewise
+LINEAR at 1 K resolution, so its exact derivative within a cell is the local table
+slope `Q[⌊T⌋+1] − Q[⌊T⌋]` (per 1 K). This is the roadmap §3 "staircase" derivative —
+constant inside each 1 K cell and discontinuous at integer K; a finite difference
+must stay within a cell to match it. Flat (0) in the clamped boundary region; the
+power-law fallback `Q = T/T_REF` gives `1/T_REF`.
+"""
+function partition_derivative(mol_id::Int, iso_id::Int, T::Float64)
+    vec = get(TIPS2024_DATA, (mol_id, iso_id), nothing)
+    isnothing(vec) && return 1.0 / T_REF      # Q = T/T_REF
+    i_lo = floor(Int, T) - TIPS_T_MIN + 1
+    i_hi = i_lo + 1
+    (i_lo < 1 || i_hi > length(vec)) && return 0.0   # clamped → flat
+    return vec[i_hi] - vec[i_lo]               # per-1K slope
+end

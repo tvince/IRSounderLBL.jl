@@ -23,13 +23,26 @@ which is exact (it reduces to the `cg_temperature_mass` weight `frac` at the wel
 point). The **`T_sfc` and `ε` columns are fully exact** (Phase-1 `∂I/∂T_sfc`, `∂I/∂ε`
 have no τ-coupling).
 
-DEFERRED to "Phase 2b" (needs `∂σ/∂T`, `∂σ/∂p` from Phase 3 — see roadmap §2.1):
-the CG-pressure/temperature coupling `∂σ/∂{p,T}·∂{p_cg,T_cg}/∂VMR`, H₂O
-self-broadening `∂σ/∂vmr_self`, and the quadratic continuum/CIA term. For a clean
-well-mixed LBL absorber with continuum off these are second-order; the FD harness
-validates how much they matter (`test/runtests.jl`). **T-level columns are Phase 3.**
+DEFERRED to "Phase 2b" (needs `∂σ/∂p` and the H₂O self term — see roadmap §2.1):
+the CG-*pressure* coupling `∂σ/∂p·∂p_cg/∂VMR`, H₂O self-broadening `∂σ/∂vmr_self`,
+and the quadratic continuum/CIA term. For a clean well-mixed LBL absorber with
+continuum off these are second-order; the FD harness validates how much they matter
+(`test/runtests.jl`).
 
-`include_temperature` specs are rejected until Phase 3 fills those columns.
+## Phase 3: temperature columns
+
+`T_lev[j]` reaches the radiance through two paths, both filled when
+`spec.include_temperature`:
+
+  - the **source** `∂B/∂T` — Phase-1 `dI_dTlev`, CIM-consistent (already exact);
+  - the **opacity** `∂σ/∂T_cg → ∂τ → dI/dτ` — `compute_voigt_cross_sections_dT`
+    chained through `∂T_cg/∂T_lev` (the log-p interpolation weight, or the mass
+    `frac` for `:mass_weighted`). `T_cg` enters only the two bounding levels, so
+    level `j` collects from layers `j` (weight `1−wT`) and `j−1` (weight `wT`).
+
+There is no `∂n/∂T` term: the LBL column amount `coef = vmr·Δp·N_air` is set by mass
+(Δp), T-independent in pressure coordinates. `∂σ/∂T` with line mixing is deferred
+(roadmap §6.4), so `include_temperature` + `line_mixing` is rejected.
 """
 
 # ── ∂(CG column VMR)/∂(level VMR) ──────────────────────────────────────────────
@@ -117,10 +130,10 @@ Analytic Jacobian `K = ∂y/∂x` of the IASI forward model about the state pack
 so the two are directly comparable. `observable` is `:bt` (default) or `:radiance`.
 
 Populates the **VMR columns** (dominant number-density term; see file docstring),
-the **`T_sfc` column**, and the **`ε` column**. The state must not include
-temperature (Phase 3). The forward configuration mirrors `iasi_forward_model` and is
-run with the cutoff-freezing policy (`dptmn=0.0`, full line set) so it matches
-`finite_difference_jacobian`.
+the **temperature-level columns** (`∂B/∂T` source + `∂σ/∂T` opacity; requires
+`line_mixing=nothing`), the **`T_sfc` column**, and the **`ε` column**. The forward
+configuration mirrors `iasi_forward_model` and is run with the cutoff-freezing policy
+(`dptmn=0.0`, full line set) so it matches `finite_difference_jacobian`.
 """
 function analytic_jacobian(prof::AtmosphericProfile,
                            linelists::Dict{GasSpecies, HITRANLinelist},
@@ -143,9 +156,10 @@ function analytic_jacobian(prof::AtmosphericProfile,
                            backend               = CPU())::Jacobian
     observable in (:bt, :radiance) ||
         error("observable must be :bt or :radiance, got :$observable")
-    spec.include_temperature &&
-        error("analytic_jacobian: temperature columns are Phase 3; build the spec with " *
-              "include_temperature=false (use finite_difference_jacobian for T).")
+    need_T = spec.include_temperature
+    (need_T && line_mixing !== nothing) &&
+        error("analytic_jacobian: ∂σ/∂T with line mixing is deferred (roadmap §6.4); " *
+              "pass line_mixing=nothing or build the spec with include_temperature=false.")
     length(prof.temperature) == spec.n_levels ||
         error("profile has $(length(prof.temperature)) levels, spec expects $(spec.n_levels)")
 
@@ -168,11 +182,24 @@ function analytic_jacobian(prof::AtmosphericProfile,
 
     retrieved = [s for (s, _) in spec.vmr_ranges]
 
-    # ── 3. Optical-depth cube + per-retrieved-species LBL contribution ────────
+    # ── 3. Optical-depth cube + per-species linearization quantities ──────────
+    # τ_sp:    LBL τ contributed by each RETRIEVED gas (for ∂τ/∂VMR).
+    # dτdTcg:  ∂τ_sp/∂T_cg = (∂σ/∂T)·coef per layer for EVERY gas (for ∂τ/∂T_lev).
+    # wT:      ∂T_cg_sp[k]/∂T_lev[k+1] (weight on the upper level); the lower-level
+    #          weight is 1−wT. log-p interpolation weight (:logp_at_pcg) or the
+    #          mass frac (:mass_weighted) — matches layer_properties exactly.
     τ_layers = zeros(Float64, n_ν_hi, n_layers)
-    τ_sp = Dict{GasSpecies, Matrix{Float64}}()   # τ contributed by each retrieved gas
+    τ_sp = Dict{GasSpecies, Matrix{Float64}}()
     for s in retrieved
         haskey(linelists, s) && (τ_sp[s] = zeros(Float64, n_ν_hi, n_layers))
+    end
+    dτdTcg = Dict{GasSpecies, Matrix{Float64}}()
+    wT     = Dict{GasSpecies, Vector{Float64}}()
+    if need_T
+        for s in keys(linelists)
+            dτdTcg[s] = zeros(Float64, n_ν_hi, n_layers)
+            wT[s]     = zeros(Float64, n_layers)
+        end
     end
 
     for k in 1:n_layers
@@ -183,9 +210,20 @@ function analytic_jacobian(prof::AtmosphericProfile,
             T_cg_sp  = layers.T_cg[sp][k]
             vmr_self = (sp == H2O) ? vmr : 0.0
             coef     = vmr * layers.Δp[k] * Nair_per_vmr
-            σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll,
-                                          T_cg_sp, p_cg_atm;
-                                          vmr_self=vmr_self, cutoff=cutoff, backend=backend)
+            if need_T
+                # Plain-Voigt path (LM-∂T deferred): σ and ∂σ/∂T together.
+                σ_sp, dσ_sp = compute_voigt_cross_sections_dT(ν_grid_hi, ll, T_cg_sp,
+                                                              p_cg_atm; vmr_self=vmr_self,
+                                                              cutoff=cutoff)
+                dτdTcg[sp][:, k] .= dσ_sp .* coef
+                p1, p2  = prof.pressure[k], prof.pressure[k+1]
+                wT[sp][k] = T_method == :mass_weighted ? _cg_mass_frac(p1, p2) :
+                            (log(layers.p_cg[sp][k] / p1) / log(p2 / p1))
+            else
+                σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll,
+                                              T_cg_sp, p_cg_atm;
+                                              vmr_self=vmr_self, cutoff=cutoff, backend=backend)
+            end
             contrib = σ_sp .* coef
             τ_layers[:, k] .+= contrib
             haskey(τ_sp, sp) && (τ_sp[sp][:, k] .= contrib)
@@ -209,7 +247,7 @@ function analytic_jacobian(prof::AtmosphericProfile,
     # ── 4. Analytic RTE Jacobian (Phase 1) ───────────────────────────────────
     Tsfc = isnothing(T_sfc) ? prof.temperature[1] : T_sfc
     p_lev = source_function == :cim ? prof.pressure : nothing
-    I_hi, dI_dτ, _dI_dTlev, dI_dTsfc, dI_dε =
+    I_hi, dI_dτ, dI_dTlev, dI_dTsfc, dI_dε =
         schwarzschild_rte_jacobian(ν_grid_hi, τ_layers, prof.temperature, Tsfc;
                                    μ=geom.μ, ε_sfc=ε_sfc,
                                    source_function=source_function, p_levels=p_lev)
@@ -273,6 +311,25 @@ function analytic_jacobian(prof::AtmosphericProfile,
             # log-VMR: ∂y/∂(log v) = v·∂y/∂v
             spec.log_vmr && (colvec .*= Float64(vlev[j]))
             @inbounds K[:, col] .= colvec
+        end
+    end
+
+    # Temperature levels: source part (Phase 1 dI_dTlev) + opacity part
+    # (∂σ/∂T_cg chained through ∂T_cg/∂T_lev). Level j touches layers j (lower
+    # boundary, weight 1−wT[j]) and j−1 (upper boundary, weight wT[j−1]).
+    if need_T
+        for j in 1:spec.n_levels
+            @inbounds dI_hi .= @view dI_dTlev[:, j]
+            for (sp, M) in dτdTcg
+                w = wT[sp]
+                if j <= n_layers
+                    @inbounds @views dI_hi .+= dI_dτ[:, j] .* M[:, j] .* (1.0 - w[j])
+                end
+                if j >= 2
+                    @inbounds @views dI_hi .+= dI_dτ[:, j-1] .* M[:, j-1] .* w[j-1]
+                end
+            end
+            @inbounds K[:, spec.temp_range[j]] .= to_channel(dI_hi)
         end
     end
 

@@ -1046,9 +1046,78 @@ using IRSounderLBL
         co2blk = r6.an.K[:, r6.spec.vmr_ranges[1][2]]
         @test sum(co2blk[i_line, :]) < 0.0
 
-        # include_temperature specs are rejected (Phase 3).
-        spec_T = StateVectorSpec(6, [CO2]; include_temperature=true)
-        @test_throws ErrorException analytic_jacobian(build(6), linelists, spec_T)
+        # VMR-only spec (Phase 2): analytic temperature path is off here.
+        @test true
+    end
+
+    # ── Jacobian Phase 3: analytic temperature Jacobian (∂σ/∂T) vs FD ─────────
+    @testset "Jacobian — ∂σ/∂T cross-section derivative (vs FD)" begin
+        mk(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                                  Float32(0.07), Float32(0.08), E,
+                                  Float32(0.75), Float32(-0.003))
+        ll = HITRANLinelist([mk(700.3, 2.0e-21, 250.0), mk(701.4, 8.0e-22, 600.0),
+                             mk(702.6, 1.5e-21, 120.0)])
+        g = wavenumber_grid(698.0, 705.0, 0.002)
+        p_atm = 0.5
+        for T in (220.4, 260.3, 295.6)      # mid-1K-cell (avoid TIPS staircase straddle)
+            σ, dσ = compute_voigt_cross_sections_dT(g, ll, T, p_atm)
+            σ_fwd = compute_voigt_cross_sections(g, ll, T, p_atm)
+            @test maximum(abs.(σ .- σ_fwd)) < 1e-30          # σ reproduces forward
+            h  = 0.05                                        # stays within the 1 K cell
+            fd = (compute_voigt_cross_sections(g, ll, T+h, p_atm) .-
+                  compute_voigt_cross_sections(g, ll, T-h, p_atm)) ./ (2h)
+            nz = findall(>(maximum(σ) * 1e-6), σ)
+            @test maximum(abs.(dσ[nz] .- fd[nz])) /
+                  (maximum(abs.(fd[nz])) + 1e-300) < 1e-5
+        end
+        # Component derivatives vs FD (mid-cell T).
+        line = ll.lines[1]; T = 260.3; h = 0.02
+        S, dS = IRSounderLBL.temperature_scaled_intensity_deriv(line, T)
+        fdS = (IRSounderLBL.temperature_scaled_intensity(line, T+h) -
+               IRSounderLBL.temperature_scaled_intensity(line, T-h)) / (2h)
+        @test dS ≈ fdS rtol=1e-4
+        gl, gd, dgl, dgd = IRSounderLBL.pressure_broadened_width_deriv(line, 0.5, T)
+        glp, gdp = IRSounderLBL.pressure_broadened_width(line, 0.5, T+h)
+        glm, gdm = IRSounderLBL.pressure_broadened_width(line, 0.5, T-h)
+        @test dgl ≈ (glp - glm) / (2h) rtol=1e-6
+        @test dgd ≈ (gdp - gdm) / (2h) rtol=1e-6
+    end
+
+    @testset "Jacobian — analytic temperature Jacobian (vs FD harness)" begin
+        mk(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                                  Float32(0.07), Float32(0.08), E,
+                                  Float32(0.75), Float32(-0.003))
+        ll = HITRANLinelist([mk(700.5, 2.0e-21, 250.0), mk(702.0, 8.0e-22, 600.0)])
+        linelists = Dict(CO2 => ll)
+        iasi = IASIInstrument(699.0, 705.0, 0.5, 13, 2.0, 0.5)
+        p = collect(range(1000.0, 200.0; length=6))
+        T = 288.0 .+ (225.0 - 288.0) .* (1000.0 .- p) ./ 800.0
+        z = (1000.0 .- p) ./ 66.0
+        prof = AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.0e-4, 6)))
+
+        spec = StateVectorSpec(6, [CO2]; include_temperature=true,
+                               include_tsfc=true, include_emissivity=true)
+        fm = (iasi=iasi, apply_continuum=false, with_ils=true)
+        # Small in-cell T steps so the FD doesn't straddle the 1 K TIPS quantization.
+        steps = default_fd_steps(spec; δT=0.1, δlogvmr=1e-3, δtsfc=0.1, δε=1e-3)
+        fd = finite_difference_jacobian(prof, linelists, spec; T_sfc=290.0, ε_sfc=0.98,
+                                        observable=:bt, steps=steps, fm_kwargs=fm)
+        an = analytic_jacobian(prof, linelists, spec; iasi=iasi, T_sfc=290.0, ε_sfc=0.98,
+                               observable=:bt, apply_continuum=false, with_ils=true)
+
+        @test size(an.K) == size(fd.K)
+        @test maximum(abs.(an.y0 .- fd.y0)) < 1e-9
+
+        tr = spec.temp_range
+        tblk_rel = maximum(abs.(an.K[:, tr] .- fd.K[:, tr])) /
+                   (maximum(abs.(fd.K[:, tr])) + 1e-30)
+        @test tblk_rel < 1e-3          # measured ~3e-6; bound leaves staircase headroom
+        # Surface columns stay exact.
+        @test maximum(abs.(an.K[:, spec.tsfc_index] .- fd.K[:, spec.tsfc_index])) < 1e-4
+        @test maximum(abs.(an.K[:, spec.emis_index] .- fd.K[:, spec.emis_index])) < 1e-4
+        # Warming the near-surface level warms the band-centre channel.
+        i_line = argmin(an.y0)
+        @test an.K[i_line, spec.temp_range[1]] > 0.0
     end
 
 end

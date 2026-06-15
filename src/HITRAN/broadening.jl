@@ -53,6 +53,31 @@ function pressure_broadened_width(line::HITRANLine, p_atm::Float64, T::Float64;
 end
 
 """
+    pressure_broadened_width_deriv(line, p_atm, T; vmr_self) -> (γ_L, γ_D, dγ_L/dT, dγ_D/dT)
+
+`pressure_broadened_width` plus its temperature derivatives (cm⁻¹/K). The air and
+self Lorentz terms scale as `(T_ref/T)^n`, so each contributes `−n·term/T`; the
+Doppler width scales as `√T`, so `dγ_D/dT = γ_D/(2T)`.
+"""
+function pressure_broadened_width_deriv(line::HITRANLine, p_atm::Float64, T::Float64;
+                                         vmr_self::Float64 = 0.0)
+    mol = Int(line.mol_id)
+    n_air_  = Float64(line.temp_depend)
+    n_self_ = get(_N_SELF, mol, n_air_)
+    t_ratio = T_REF / T
+    A = t_ratio^n_air_  * line.air_broad  * (1.0 - vmr_self) * p_atm
+    B = t_ratio^n_self_ * line.self_broad * vmr_self          * p_atm
+    γ_L  = A + B
+    dγ_L = -(n_air_ * A + n_self_ * B) / T
+
+    M    = _molecular_mass_amu(mol)
+    γ_D  = line.wavenumber * 3.58126e-7 * sqrt(T / M)
+    dγ_D = γ_D / (2.0 * T)
+
+    return Float64(γ_L), Float64(γ_D), Float64(dγ_L), Float64(dγ_D)
+end
+
+"""
     temperature_scaled_intensity(line, T) -> Float64
 
 Scale the HITRAN 296 K reference intensity to temperature T (K) using the
@@ -71,6 +96,35 @@ function temperature_scaled_intensity(line::HITRANLine, T::Float64)
     boltzmann   = exp(-_C2 * E″ * (1.0/T - 1.0/T_REF))
 
     return line.intensity * Qr * boltzmann * stim_factor
+end
+
+"""
+    temperature_scaled_intensity_deriv(line, T) -> (S, dS/dT)
+
+`temperature_scaled_intensity` plus its temperature derivative (cm⁻¹/(molec·cm⁻²)/K).
+Logarithmic derivative of the three HITRAN factors:
+
+    dlnS/dT = −Q′(T)/Q(T)  +  C₂E″/T²  −  (C₂ν₀/T²)/(exp(C₂ν₀/T) − 1)
+
+(`Q′` is the TIPS table slope, `partition_derivative`; the stimulated-emission term is
+negative — the `1 − e^{−C₂ν₀/T}` factor *decreases* with T). `dS = S·dlnS/dT`.
+"""
+function temperature_scaled_intensity_deriv(line::HITRANLine, T::Float64)
+    ν₀ = line.wavenumber
+    E″ = line.lower_energy
+    mol, iso = Int(line.mol_id), Int(line.iso_id)
+    Qr  = Q_ratio(mol, iso, T)
+    QT  = partition_function(mol, iso, T)
+    dQT = partition_derivative(mol, iso, T)
+
+    stim_num    = 1.0 - exp(-_C2 * ν₀ / T)
+    stim_factor = stim_num / (1.0 - exp(-_C2 * ν₀ / T_REF))
+    boltzmann   = exp(-_C2 * E″ * (1.0/T - 1.0/T_REF))
+    S = line.intensity * Qr * boltzmann * stim_factor
+
+    a     = _C2 * ν₀
+    dlnS  = -dQT / QT + _C2 * E″ / T^2 - (a / T^2) / (exp(a / T) - 1.0)
+    return S, S * dlnS
 end
 
 # Approximate molecular masses (amu) for HITRAN molecule IDs 1–11

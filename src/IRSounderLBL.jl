@@ -22,6 +22,7 @@ include("CrossSections/voigt.jl")
 include("CrossSections/continuum.jl")
 include("CrossSections/optical_depth.jl")
 include("CrossSections/line_mixing.jl")
+include("CrossSections/cross_section_jacobian.jl")
 
 # Solver
 include("Solver/planck.jl")
@@ -63,7 +64,7 @@ export pressure_broadened_width, temperature_scaled_intensity, pressure_shift
 # Cross section exports
 export VoigtMethod, Weideman, PseudoVoigt, FullFaddeeva
 export weideman_voigt, faddeeva_voigt, pseudo_voigt_profile
-export voigt_profile, compute_voigt_cross_sections
+export voigt_profile, compute_voigt_cross_sections, compute_voigt_cross_sections_dT
 export h2o_continuum, co2_continuum, co2_cia, n2_cia, o2_cia
 export layer_optical_depth
 export RelmatLine, RelmatBand, HITRANRelmatData
