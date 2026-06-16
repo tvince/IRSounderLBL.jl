@@ -1196,6 +1196,60 @@ using LinearAlgebra
               Dict(CO2=>fill(4.0e-4,nlev)), (:co2,))
     end
 
+    # ── Jacobian Phase 6.4: line-mixing-aware ∂σ/∂{T,p} (VP_Y & VP_W) vs FD ──
+    @testset "Jacobian — line mixing (VP_Y & VP_W) vs FD harness" begin
+        RL = IRSounderLBL.RelmatLine; RB = IRSounderLBL.RelmatBand
+        WT = IRSounderLBL.W0B0Table;  RD = IRSounderLBL.HITRANRelmatData
+
+        # Coupled CO₂ Q-branch near 700 cm⁻¹. DipoT/PopuT0 are scaled so the S-file
+        # intensity S0 = DipoT²·PopuT0·ν·stim ≈ 2e-24 matches the Voigt baseline lines
+        # below — the LM term is then a true perturbation (~Y·p of the baseline), not a
+        # term that swamps the baseline and saturates the column (which would make the
+        # comparison degenerate rather than a real test of the derivative).
+        dipo = 1.7e-13
+        l1 = RL(Int8(1), 700.40, Int16(20), Int8(0), 0.09, Float32(0.75), Float32(-0.004), 250.0, dipo, 0.10, dipo)
+        l2 = RL(Int8(1), 700.55, Int16(18), Int8(0), 0.09, Float32(0.75), Float32(-0.004), 240.0, dipo, 0.09, dipo)
+        l3 = RL(Int8(1), 701.30, Int16(16), Int8(0), 0.085, Float32(0.75), Float32(-0.004), 300.0, 0.9dipo, 0.08, 0.9dipo)
+        band = RB("CO2Q", Int8(1), Int8(1), Int8(1), 700.4, 701.3, [l1, l2, l3])
+        wt = WT()
+        wt.qq[(20,18)] = (log(0.035), 0.5); wt.qq[(20,16)] = (log(0.025), 0.5); wt.qq[(18,16)] = (log(0.030), 0.5)
+        relmat = RD([band], Dict{NTuple{2,Int8}, typeof(wt)}((Int8(1), Int8(1)) => wt))
+
+        iasi = IASIInstrument(699.0, 703.0, 0.5, 9, 2.0, 0.5)
+        nlev = 6
+        p = collect(range(1000.0, 200.0; length=nlev))
+        T = 288.0 .+ (225.0 - 288.0) .* (1000.0 .- p) ./ 800.0
+        z = (1000.0 .- p) ./ 66.0
+        mkC(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                                   Float32(0.09), Float32(0.08), E, Float32(0.75), Float32(-0.004))
+        # Weak baseline (S~1e-24) → moderately thick, unsaturated band.
+        ll = Dict(CO2 => HITRANLinelist([mkC(700.40,2.0e-24,250.0), mkC(700.55,1.8e-24,240.0),
+                                         mkC(701.30,1.4e-24,300.0), mkC(700.95,9.0e-25,500.0)]))
+        prof = AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.0e-4, nlev)))
+        spec = StateVectorSpec(nlev, [CO2]; include_temperature=true,
+                               include_tsfc=true, include_emissivity=true)
+
+        function check_lm(lm)
+            fm = (iasi=iasi, apply_continuum=false, with_ils=true, line_mixing=lm)
+            fd = finite_difference_jacobian(prof, ll, spec; T_sfc=290.0, ε_sfc=0.98,
+                    observable=:bt,
+                    steps=default_fd_steps(spec; δT=0.1, δtsfc=0.1, δlogvmr=1e-3, δε=1e-3),
+                    fm_kwargs=fm)
+            an = analytic_jacobian(prof, ll, spec; iasi=iasi, T_sfc=290.0, ε_sfc=0.98,
+                    observable=:bt, apply_continuum=false, with_ils=true, line_mixing=lm)
+            vcol = spec.vmr_ranges[1][2]; tr = spec.temp_range
+            rel(c) = maximum(abs.(an.K[:,c] .- fd.K[:,c])) / (maximum(abs.(fd.K[:,c])) + 1e-30)
+            @test maximum(abs.(an.y0 .- fd.y0)) < 1e-9
+            @test rel(vcol) < 1e-5      # VMR column FD-exact with LM perturbation in ∂σ/∂{p}
+            @test rel(tr)   < 5e-5      # T column FD-exact (∂σ/∂T incl. LM perturbation)
+            @test maximum(abs.(an.K[:,spec.tsfc_index] .- fd.K[:,spec.tsfc_index])) < 1e-4
+            @test maximum(abs.(an.K[:,spec.emis_index] .- fd.K[:,spec.emis_index])) < 1e-4
+        end
+
+        check_lm(VPYLineMixing(relmat))                                  # first-order dispersive
+        check_lm(VPWLineMixing(relmat; whitelist=Set(["CO2Q"])))         # full-matrix eigendecomp
+    end
+
     # ── Jacobian Phase 5: optimal-estimation retrieval (synthetic closed loop) ──
     @testset "Optimal estimation — synthetic closed-loop retrieval" begin
         mk(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,

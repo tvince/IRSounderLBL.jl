@@ -197,6 +197,18 @@ function _species_cross_section(lm::VPWLineMixing, sp::GasSpecies, ν_grid, ll, 
                                        min_band_strength=lm.min_band_strength)
 end
 
+# ── LM-only perturbation accessor (for the Jacobian ∂σ/∂{T,p}, roadmap §6.4) ──
+# Returns Δσ = σ_LM − σ_voigt for the active model: the additive line-mixing term
+# the Jacobian central-differences in (T, p). VP_Y → dispersive sum; VP_W → the
+# eigendecomposed band-perturbation sum. The Voigt baseline keeps its analytic grad;
+# only this (cheap relative to the baseline) perturbation is finite-differenced.
+_lm_perturbation(lm::VPYLineMixing, ν_grid, T, p_atm; cutoff) =
+    compute_lm_dispersive_correction(ν_grid, lm.data, T, p_atm;
+                                     cutoff=cutoff, min_band_strength=lm.min_band_strength)
+_lm_perturbation(lm::VPWLineMixing, ν_grid, T, p_atm; cutoff) =
+    _vpw_perturbation(ν_grid, lm.data, T, p_atm; whitelist=lm.whitelist,
+                      cutoff=cutoff, min_band_strength=lm.min_band_strength)
+
 # ── File parsers ──────────────────────────────────────────────────────────────
 
 function _parse_fortran_d(s::AbstractString)::Float64
@@ -953,7 +965,28 @@ function compute_voigt_vpw_cross_sections(ν_grid::WavenumberGrid,
                                             min_band_strength::Float64 = 0.0,
                                             x_far::Float64 = _X_FAR)::Vector{Float64}
     σ_voigt = compute_voigt_cross_sections(ν_grid, ll_co2, T, p_atm; cutoff=cutoff)
+    Δσ = _vpw_perturbation(ν_grid, relmat, T, p_atm; whitelist=whitelist, cutoff=cutoff,
+                           keep_threshold=keep_threshold, min_band_strength=min_band_strength,
+                           x_far=x_far)
+    return max.(σ_voigt .+ Δσ, 0.0)
+end
 
+"""
+    _vpw_perturbation(ν_grid, relmat, T, p_atm; whitelist, cutoff, keep_threshold,
+                      min_band_strength, x_far) -> Vector{Float64}
+
+VP_W line-mixing perturbation Δσ (cm²/molec), summed over bands: whitelisted bands
+use the eigendecomposed `compute_vpw_band_perturbation`, the rest the VP_Y
+`_lm_band_dispersive`. This is the LM-only additive term (no Voigt baseline, no
+`max(·,0)` clamp) — the perturbation the Jacobian central-differences in `(T, p)`.
+"""
+function _vpw_perturbation(ν_grid::WavenumberGrid, relmat::HITRANRelmatData,
+                           T::Float64, p_atm::Float64;
+                           whitelist::Set{String},
+                           cutoff::Float64 = 25.0,
+                           keep_threshold::Float64 = 1e-4,
+                           min_band_strength::Float64 = 0.0,
+                           x_far::Float64 = _X_FAR)::Vector{Float64}
     Δσ = zeros(Float64, ν_grid.n)
     for band in relmat.bands
         Int(band.li) > 8 && continue
@@ -973,8 +1006,7 @@ function compute_voigt_vpw_cross_sections(ν_grid::WavenumberGrid,
             Δσ .+= _lm_band_dispersive(ν_grid, band, wtfit, T, p_atm; cutoff=cutoff, x_far=x_far)
         end
     end
-
-    return max.(σ_voigt .+ Δσ, 0.0)
+    return Δσ
 end
 
 # ── Cross-section computation ─────────────────────────────────────────────────

@@ -200,3 +200,66 @@ function compute_voigt_cross_sections_grad(ν_grid::WavenumberGrid,
 
     return (σ=σ, dT=dT, dp=dp, dself=dv)
 end
+
+# ── Cross-section gradient with optional line mixing (roadmap §6.4) ───────────
+#
+# `_species_cross_section_grad` is the line-mixing-aware sibling of
+# `compute_voigt_cross_sections_grad`, mirroring `_species_cross_section`: it
+# returns `(σ, dT, dp, dself)` for the species' *implemented* cross section so the
+# Jacobian works with LM active. The plain-Voigt baseline keeps its analytic
+# derivatives; the additive LM perturbation Δσ (VP_Y dispersive or VP_W
+# eigendecomposition — see §6.4: the eigenvector perturbation is materially
+# harder, so it is finite-differenced) is central-differenced in `(T, p)`. The
+# perturbation is cheap relative to the Voigt baseline (a handful of bands), so a
+# localized 2-point FD per derivative — the same technique Phase 2b/2c use for the
+# Curtis-Godson and continuum couplings — is robust and matches the forward.
+
+const _LM_GRAD_DT = 0.02      # K, central-FD step for ∂Δσ/∂T
+const _LM_GRAD_DP_REL = 1e-4  # relative central-FD step for ∂Δσ/∂p_atm
+
+# nothing / non-LM model → the analytic Voigt grad (exact, one Faddeeva pass).
+function _species_cross_section_grad(::Nothing, sp::GasSpecies,
+                                     ν_grid::WavenumberGrid, ll::HITRANLinelist,
+                                     T::Float64, p_atm::Float64;
+                                     vmr_self::Float64 = 0.0, cutoff::Float64 = 25.0,
+                                     x_far::Float64 = _X_FAR, backend = nothing)
+    compute_voigt_cross_sections_grad(ν_grid, ll, T, p_atm;
+                                      vmr_self=vmr_self, cutoff=cutoff, x_far=x_far)
+end
+
+function _species_cross_section_grad(lm::AbstractLineMixing, sp::GasSpecies,
+                                     ν_grid::WavenumberGrid, ll::HITRANLinelist,
+                                     T::Float64, p_atm::Float64;
+                                     vmr_self::Float64 = 0.0, cutoff::Float64 = 25.0,
+                                     x_far::Float64 = _X_FAR, backend = nothing)
+    # Species not handled by this LM model fall through to the analytic Voigt grad.
+    sp == lm.data.species || return compute_voigt_cross_sections_grad(ν_grid, ll, T, p_atm;
+                                          vmr_self=vmr_self, cutoff=cutoff, x_far=x_far)
+
+    g = compute_voigt_cross_sections_grad(ν_grid, ll, T, p_atm;
+                                          vmr_self=vmr_self, cutoff=cutoff, x_far=x_far)
+
+    # LM perturbation at the centre and its central-FD derivatives in (T, p).
+    Δσ0 = _lm_perturbation(lm, ν_grid, T, p_atm; cutoff=cutoff)
+    hT  = _LM_GRAD_DT
+    dΔT = (_lm_perturbation(lm, ν_grid, T + hT, p_atm; cutoff=cutoff) .-
+           _lm_perturbation(lm, ν_grid, T - hT, p_atm; cutoff=cutoff)) ./ (2hT)
+    hp  = max(p_atm, 1e-6) * _LM_GRAD_DP_REL
+    dΔp = (_lm_perturbation(lm, ν_grid, T, p_atm + hp; cutoff=cutoff) .-
+           _lm_perturbation(lm, ν_grid, T, p_atm - hp; cutoff=cutoff)) ./ (2hp)
+
+    # Total cross section with the forward's max(σ_voigt + Δσ, 0) clamp; the
+    # derivatives are the summed sensitivities, zeroed wherever the total is clamped.
+    σ  = g.σ .+ Δσ0
+    dT = g.dT .+ dΔT
+    dp = g.dp .+ dΔp
+    @inbounds for i in eachindex(σ)
+        if σ[i] <= 0.0
+            σ[i] = 0.0; dT[i] = 0.0; dp[i] = 0.0
+        end
+    end
+    # dself: only H₂O (vmr_self ≠ 0) consumes it, and the LM species is not H₂O,
+    # so the analytic Voigt dself passes through unused (and Δσ has no vmr_self
+    # dependence). Returned for signature parity with the no-LM grad.
+    return (σ=σ, dT=dT, dp=dp, dself=g.dself)
+end

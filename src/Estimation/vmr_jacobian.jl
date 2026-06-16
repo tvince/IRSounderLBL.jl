@@ -37,9 +37,8 @@ its `v1≈v2` branch); `∂T_cg/∂VMR = ∂T_cg/∂p_cg·∂p_cg/∂VMR` (zero 
 whose `T_cg` is VMR-independent); `∂vmr_self/∂VMR = ∂vmr_cg/∂VMR` for H₂O (else 0).
 This brings the VMR columns to FD precision (~1e-7), matching the T columns. Set
 `vmr_coupling=false` for the faster dominant-only term (the residual is then the
-coupling, ~few-% on coarse grids, O(Δz)). Coupling is skipped (dominant-only) when
-line mixing is active. STILL DEFERRED: the quadratic continuum/CIA term in `∂τ/∂VMR`
-(only with `apply_continuum=true` for H₂O/CO₂).
+coupling, ~few-% on coarse grids, O(Δz)). With line mixing active, `∂σ/∂{p,T}`
+includes the LM perturbation (roadmap §6.4; see `_species_cross_section_grad`).
 
 ## Phase 3: temperature columns
 
@@ -53,8 +52,9 @@ line mixing is active. STILL DEFERRED: the quadratic continuum/CIA term in `∂�
     level `j` collects from layers `j` (weight `1−wT`) and `j−1` (weight `wT`).
 
 There is no `∂n/∂T` term: the LBL column amount `coef = vmr·Δp·N_air` is set by mass
-(Δp), T-independent in pressure coordinates. `∂σ/∂T` with line mixing is deferred
-(roadmap §6.4), so `include_temperature` + `line_mixing` is rejected.
+(Δp), T-independent in pressure coordinates. With `line_mixing` active, `∂σ/∂T` adds
+the central-differenced LM perturbation on top of the analytic Voigt baseline
+(roadmap §6.4; `_species_cross_section_grad`).
 """
 
 # ── ∂(CG column VMR)/∂(level VMR) ──────────────────────────────────────────────
@@ -143,8 +143,9 @@ so the two are directly comparable. `observable` is `:bt` (default) or `:radianc
 
 Populates the **VMR columns** (dominant number-density term + full CG-pressure/
 temperature/self coupling when `vmr_coupling`; see file docstring), the
-**temperature-level columns** (`∂B/∂T` source + `∂σ/∂T` opacity; requires
-`line_mixing=nothing`), the **`T_sfc` column**, and the **`ε` column**. The forward
+**temperature-level columns** (`∂B/∂T` source + `∂σ/∂T` opacity), the **`T_sfc`
+column**, and the **`ε` column**. `line_mixing` (VP_Y/VP_W) is supported on every
+column via `_species_cross_section_grad` (§6.4). The forward
 configuration mirrors `iasi_forward_model` and is run with the cutoff-freezing policy
 (`dptmn=0.0`, full line set) so it matches `finite_difference_jacobian`.
 """
@@ -171,12 +172,11 @@ function analytic_jacobian(prof::AtmosphericProfile,
     observable in (:bt, :radiance) ||
         error("observable must be :bt or :radiance, got :$observable")
     need_T = spec.include_temperature
-    # Phase-2b VMR coupling (∂σ/∂{p,T,vmr_self}·∂{p_cg,T_cg,vmr_self}/∂VMR) is a
-    # plain-Voigt path; it is skipped (dominant term only) when line mixing is active.
-    do_coupling = vmr_coupling && line_mixing === nothing
-    (need_T && line_mixing !== nothing) &&
-        error("analytic_jacobian: ∂σ/∂T with line mixing is deferred (roadmap §6.4); " *
-              "pass line_mixing=nothing or build the spec with include_temperature=false.")
+    # VMR coupling (∂σ/∂{p,T,vmr_self}·∂{p_cg,T_cg,vmr_self}/∂VMR) and the temperature
+    # opacity term both go through `_species_cross_section_grad`, which is line-mixing
+    # aware (roadmap §6.4): the Voigt baseline keeps its analytic grad and the additive
+    # LM perturbation (VP_Y/VP_W) is central-differenced in (T, p).
+    do_coupling = vmr_coupling
     length(prof.temperature) == spec.n_levels ||
         error("profile has $(length(prof.temperature)) levels, spec expects $(spec.n_levels)")
 
@@ -244,9 +244,13 @@ function analytic_jacobian(prof::AtmosphericProfile,
             coef     = vmr * layers.Δp[k] * Nair_per_vmr
             is_retr  = sp in retr_set
             if need_T || (do_coupling && is_retr)
-                # One Faddeeva pass → σ and the needed derivatives (plain Voigt).
-                gr = compute_voigt_cross_sections_grad(ν_grid_hi, ll, T_cg_sp, p_cg_atm;
-                                                       vmr_self=vmr_self, cutoff=cutoff)
+                # σ and the needed derivatives. `_species_cross_section_grad` is the
+                # LM-aware grad: plain Voigt (analytic) for non-LM species/models, and
+                # Voigt baseline + central-FD'd LM perturbation when `line_mixing`
+                # handles this species (roadmap §6.4). σ matches the forward exactly.
+                gr = _species_cross_section_grad(line_mixing, sp, ν_grid_hi, ll,
+                                                 T_cg_sp, p_cg_atm;
+                                                 vmr_self=vmr_self, cutoff=cutoff, backend=backend)
                 σ_sp = gr.σ
                 if need_T
                     dτdTcg[sp][:, k] .= gr.dT .* coef
