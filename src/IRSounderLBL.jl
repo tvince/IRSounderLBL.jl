@@ -33,6 +33,7 @@ include("Solver/schwarzschild_jacobian.jl")
 # Sensor
 include("Sensor/geometry.jl")
 include("Sensor/ils.jl")
+include("Sensor/ils_fft.jl")
 include("Sensor/iasi.jl")
 
 # Parallel
@@ -86,7 +87,7 @@ export ViewingGeometry, airmass_factor
 export nadir_geometry, iasi_scan_angles
 export scan_angle_to_local_zenith, iasi_zenith_angles
 export IASIInstrument, iasi_grid
-export ils_kernel, apply_ils
+export ils_kernel, apply_ils, apply_ils_fft, ILSConvolver, ils_apply!
 export NORTON_BEER_COEFFS, norton_beer_apodization
 export iasi_forward_model
 

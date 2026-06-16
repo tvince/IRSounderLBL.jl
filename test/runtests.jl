@@ -1185,4 +1185,22 @@ using LinearAlgebra
         @test sum(rC.x) > sum(xaC)                       # retrieved CO₂ increased toward truth
     end
 
+    # ── Phase 4: FFT-based ILS reproduces the direct convolution ──────────────
+    @testset "ILS — FFT convolution ≡ direct apply_ils" begin
+        g = wavenumber_grid(699.0, 705.0, 0.002)
+        spec = [1.0 + 0.5sin(3.0*ν) + (abs(ν-702.0) < 0.05 ? -0.8 : 0.0) for ν in g.ν]
+        for apod in (:gaussian, :norton_beer_medium)
+            δν, kern = ils_kernel(g.Δν, 2.0, 0.5; apodization=apod)
+            direct = apply_ils(g, spec, δν, kern)
+            @test maximum(abs.(apply_ils_fft(g, spec, δν, kern) .- direct)) < 1e-12
+            # Prebuilt convolver + in-place apply matches too, and is reusable.
+            conv = ILSConvolver(g, δν, kern)
+            out = similar(spec)
+            ils_apply!(conv, out, spec)
+            @test maximum(abs.(out .- direct)) < 1e-12
+            ils_apply!(conv, out, reverse(spec))             # reuse on a different spectrum
+            @test maximum(abs.(out .- apply_ils(g, reverse(spec), δν, kern))) < 1e-12
+        end
+    end
+
 end

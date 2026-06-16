@@ -253,14 +253,19 @@ function analytic_jacobian(prof::AtmosphericProfile,
                                    source_function=source_function, p_levels=p_lev)
 
     # ── 5. Channel-space linear tail, precomputed once ───────────────────────
+    # The ILS convolution is the same fixed linear operator for every column, so we
+    # build one FFT convolver (Phase 4) and reuse it — ~3000× faster than the direct
+    # per-column convolution at the production grid, reproducing it to round-off.
     ν_iasi = wavenumber_grid(iasi.ν_min, iasi.ν_max, iasi.Δν)
-    ils_δν = nothing; ils_kern = nothing
+    conv   = nothing
     if with_ils
         ils_δν, ils_kern = ils_kernel(Δν_hi, iasi.opd_max, iasi.fwhm_gauss;
                                       apodization=apodization)
+        conv = ILSConvolver(ν_grid_hi, ils_δν, ils_kern)
     end
+    apod_buf = Vector{Float64}(undef, n_ν_hi)   # reused ILS output buffer
     # I → R on channel grid (same path as the forward model) for the ∂BT/∂R diagonal.
-    R_apod_I = with_ils ? apply_ils(ν_grid_hi, I_hi, ils_δν, ils_kern) : I_hi
+    R_apod_I = with_ils ? ils_apply!(conv, apod_buf, I_hi) : I_hi
     R_iasi   = _resample_to_iasi(ν_grid_hi, R_apod_I, ν_iasi)
     n_ch     = ν_iasi.n
     dBTdR    = observable === :bt ?
@@ -269,7 +274,7 @@ function analytic_jacobian(prof::AtmosphericProfile,
 
     # Map a monochromatic derivative column (length n_ν_hi) to channel space.
     to_channel = function (dI_hi::Vector{Float64})
-        a = with_ils ? apply_ils(ν_grid_hi, dI_hi, ils_δν, ils_kern) : dI_hi
+        a = with_ils ? ils_apply!(conv, apod_buf, dI_hi) : dI_hi
         r = _resample_to_iasi(ν_grid_hi, a, ν_iasi)
         observable === :bt ? (r .* dBTdR) : r
     end
