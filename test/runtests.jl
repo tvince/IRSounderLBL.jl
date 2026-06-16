@@ -1,5 +1,6 @@
 using Test
 using IRSounderLBL
+using LinearAlgebra
 
 @testset "IRSounderLBL.jl" begin
 
@@ -1118,6 +1119,70 @@ using IRSounderLBL
         # Warming the near-surface level warms the band-centre channel.
         i_line = argmin(an.y0)
         @test an.K[i_line, spec.temp_range[1]] > 0.0
+    end
+
+    # ── Jacobian Phase 5: optimal-estimation retrieval (synthetic closed loop) ──
+    @testset "Optimal estimation — synthetic closed-loop retrieval" begin
+        mk(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                                  Float32(0.07), Float32(0.08), E,
+                                  Float32(0.75), Float32(-0.003))
+        ll = HITRANLinelist([mk(700.5, 2.0e-21, 250.0), mk(702.0, 8.0e-22, 600.0)])
+        linelists = Dict(CO2 => ll)
+        iasi = IASIInstrument(699.0, 705.0, 0.5, 13, 2.0, 0.5)
+        fm   = (iasi=iasi, apply_continuum=false, with_ils=true)
+        nlev = 6
+        p = collect(range(1000.0, 200.0; length=nlev))
+        T = 288.0 .+ (225.0 - 288.0) .* (1000.0 .- p) ./ 800.0
+        z = (1000.0 .- p) ./ 66.0
+        base = AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.0e-4, nlev)))
+
+        # (A) Well-posed scalar recovery: T_sfc from a 10 K-wrong guess, noiseless.
+        specA = StateVectorSpec(nlev, GasSpecies[]; include_temperature=false,
+                                include_tsfc=true, include_emissivity=false)
+        _, _, yA = iasi_forward_model(base, linelists; T_sfc=298.0, ε_sfc=1.0, dptmn=0.0, fm...)
+        SeA = Matrix(Diagonal(fill(0.2^2, length(yA))))
+        rA = optimal_estimation(yA, specA, base, linelists;
+                                xa=[288.0], Sa=reshape([100.0],1,1), Se=SeA, fm_kwargs=fm)
+        @test rA.converged
+        @test isapprox(rA.x[1], 298.0; atol=0.05)        # recovers truth
+        @test isapprox(rA.dof, 1.0; atol=0.05)           # one piece of information
+        @test rA.cost[end] < rA.cost[1]
+
+        # (B) Profile + surface (ε fixed), noisy: convergence, fit, valid diagnostics.
+        specB = StateVectorSpec(nlev, GasSpecies[]; include_temperature=true,
+                                include_tsfc=true, include_emissivity=false)
+        _, _, yclean = iasi_forward_model(base, linelists; T_sfc=296.0, ε_sfc=1.0, dptmn=0.0, fm...)
+        σn = 0.2
+        yB = yclean .+ σn .* [sin(13.0*i) for i in 1:length(yclean)]
+        xtB = pack_state(specB, base; T_sfc=296.0, ε_sfc=1.0)
+        xaB = copy(xtB); xaB[specB.temp_range] .+= 4.0; xaB[specB.tsfc_index] = 290.0
+        SaB = Matrix(Diagonal([fill(25.0, nlev); 25.0]))
+        SeB = Matrix(Diagonal(fill(σn^2, length(yB))))
+        rB = optimal_estimation(yB, specB, base, linelists;
+                                xa=xaB, Sa=SaB, Se=SeB, fm_kwargs=fm)
+        @test rB.converged
+        @test rB.cost[end] < rB.cost[1]
+        @test maximum(abs.(rB.y_fit .- yB)) < 5σn       # fits to the noise level
+        @test isapprox(rB.x[specB.tsfc_index], 296.0; atol=1.0)
+        @test 0.0 < rB.dof < specB.n                     # regularised: DOF below n
+        @test isapprox(rB.S_hat, rB.S_hat')              # posterior symmetric
+        @test isposdef(Symmetric(rB.S_hat))              # and positive-definite
+        @test size(rB.A) == (specB.n, specB.n)
+
+        # (C) VMR path through OE: recover a +20% CO₂ column, noiseless.
+        specC = StateVectorSpec(nlev, [CO2]; include_temperature=false,
+                                include_tsfc=false, include_emissivity=false)
+        base12 = AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.8e-4, nlev)))
+        _, _, yC = iasi_forward_model(base12, linelists; T_sfc=288.0, ε_sfc=1.0, dptmn=0.0, fm...)
+        xaC = pack_state(specC, base)                    # prior = unscaled 4.0e-4
+        SeC = Matrix(Diagonal(fill(0.1^2, length(yC))))
+        rC = optimal_estimation(yC, specC, base, linelists;
+                                xa=xaC, Sa=Matrix(Diagonal(fill(1.0, specC.n))),
+                                Se=SeC, fm_kwargs=fm, max_iter=20)
+        @test rC.converged
+        @test rC.cost[end] < rC.cost[1]
+        @test maximum(abs.(rC.y_fit .- yC)) < 0.05       # spectrum fit (K)
+        @test sum(rC.x) > sum(xaC)                       # retrieved CO₂ increased toward truth
     end
 
 end
