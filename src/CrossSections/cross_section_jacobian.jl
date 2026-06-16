@@ -72,65 +72,131 @@ function compute_voigt_cross_sections_dT(ν_grid::WavenumberGrid,
                                          vmr_self::Float64 = 0.0,
                                          cutoff::Float64 = 25.0,
                                          x_far::Float64 = _X_FAR)
+    g = compute_voigt_cross_sections_grad(ν_grid, linelist, T, p_atm;
+                                          vmr_self=vmr_self, cutoff=cutoff, x_far=x_far)
+    return g.σ, g.dT
+end
+
+"""
+    compute_voigt_cross_sections_grad(ν_grid, linelist, T, p_atm;
+                                      vmr_self=0.0, cutoff=25.0, x_far=_X_FAR)
+        -> (σ, dT, dp, dself)
+
+Cross section and its derivatives w.r.t. temperature `T` (K), pressure `p_atm` (atm),
+and the self-broadening fraction `vmr_self`, in a single Faddeeva pass — the building
+block for the temperature Jacobian (`dT`) and the Phase-2b VMR coupling (`dp`, `dself`).
+`σ` matches `compute_voigt_cross_sections` to round-off.
+
+Only `S`, `γ_L`, `γ_D`, and the line centre carry these variables:
+`T` → `S(T)`, `γ_L∝(T_ref/T)^n`, `γ_D∝√T`; `p` → `γ_L∝p` and the shift `ν₀+δ·p`;
+`vmr_self` → the air/self mix of `γ_L` and of `δ`. Each derivative is
+`Σ_j [∂Snorm·(H−ped) + Snorm·(∂H−∂ped)]`, where `∂H = H_x·∂x + H_y·∂y` and the pedestal
+prefactor `2−(Δν/cutoff)²` itself moves with `ν₀` for the `p`/`vmr_self` derivatives
+(but not `T`). The `max(·,0)` clamp zeroes every derivative where `σ` is clamped.
+"""
+function compute_voigt_cross_sections_grad(ν_grid::WavenumberGrid,
+                                           linelist::HITRANLinelist,
+                                           T::Float64,
+                                           p_atm::Float64;
+                                           vmr_self::Float64 = 0.0,
+                                           cutoff::Float64 = 25.0,
+                                           x_far::Float64 = _X_FAR)
     n_ν = ν_grid.n
     n_L = length(linelist.lines)
 
-    ν0     = Vector{Float64}(undef, n_L)
-    f_arr  = Vector{Float64}(undef, n_L)
-    df_arr = Vector{Float64}(undef, n_L)
-    y_arr  = Vector{Float64}(undef, n_L)
-    dy_arr = Vector{Float64}(undef, n_L)
-    Sn     = Vector{Float64}(undef, n_L)
-    dSn    = Vector{Float64}(undef, n_L)
-    Hc     = Vector{Float64}(undef, n_L)
-    dHc    = Vector{Float64}(undef, n_L)
+    ν0    = Vector{Float64}(undef, n_L)
+    f_arr = Vector{Float64}(undef, n_L)
+    df_arr= Vector{Float64}(undef, n_L)      # ∂f/∂T
+    y_arr = Vector{Float64}(undef, n_L)
+    dyT   = Vector{Float64}(undef, n_L)       # ∂y/∂T
+    dyp   = Vector{Float64}(undef, n_L)       # ∂y/∂p
+    dyv   = Vector{Float64}(undef, n_L)       # ∂y/∂vmr_self
+    dν0p  = Vector{Float64}(undef, n_L)       # ∂ν0/∂p   = δ_eff
+    dν0v  = Vector{Float64}(undef, n_L)       # ∂ν0/∂vmr_self
+    Sn    = Vector{Float64}(undef, n_L)
+    dSnT  = Vector{Float64}(undef, n_L)        # ∂Snorm/∂T (∂Snorm/∂p = ∂Snorm/∂vs = 0)
+    Hc    = Vector{Float64}(undef, n_L)
+    dHcT  = Vector{Float64}(undef, n_L)
+    dHcp  = Vector{Float64}(undef, n_L)
+    dHcv  = Vector{Float64}(undef, n_L)
 
     @inbounds for (j, line) in enumerate(linelist.lines)
-        ν0[j] = pressure_shift(line, p_atm; vmr_self=vmr_self)   # T-independent
+        mol     = Int(line.mol_id)
+        n_air_  = Float64(line.temp_depend)
+        n_self_ = get(_N_SELF, mol, n_air_)
+        δ_air   = Float64(line.pressure_shift)
+        δ_self  = get(_DELTA_SELF, mol, 0.0)
+        ν0[j]   = pressure_shift(line, p_atm; vmr_self=vmr_self)
+        dν0p[j] = δ_air * (1.0 - vmr_self) + δ_self * vmr_self           # ∂ν0/∂p
+        dν0v[j] = (δ_self - δ_air) * p_atm                              # ∂ν0/∂vmr_self
+
         S, dS = temperature_scaled_intensity_deriv(line, T)
-        gl, gd, dgl, dgd = pressure_broadened_width_deriv(line, p_atm, T; vmr_self=vmr_self)
-        gd  = max(gd, 1e-10)
-        f   = _SQRT_LN2 / gd
-        df  = -f * (dgd / gd)
+        gl, gd, dglT, dgd = pressure_broadened_width_deriv(line, p_atm, T; vmr_self=vmr_self)
+        gd = max(gd, 1e-10)
+        f  = _SQRT_LN2 / gd
+        df = -f * (dgd / gd)
+        # γ_L air/self coefficients (per atm) for the p and vmr_self derivatives.
+        t_ratio = T_REF / T
+        a_coef  = t_ratio^n_air_  * line.air_broad
+        b_coef  = t_ratio^n_self_ * line.self_broad
+        dglp = gl / p_atm                                               # ∂γ_L/∂p
+        dglv = (b_coef - a_coef) * p_atm                                # ∂γ_L/∂vmr_self
+
         f_arr[j]  = f
         df_arr[j] = df
         y_arr[j]  = gl * f
-        dy_arr[j] = dgl * f + gl * df
+        dyT[j]    = dglT * f + gl * df
+        dyp[j]    = dglp * f
+        dyv[j]    = dglv * f
         Sn[j]     = S * f * _INV_SQRT_PI
-        dSn[j]    = (dS * f + S * df) * _INV_SQRT_PI
-        # Pedestal anchor at the cutoff (far-wing branch in practice).
-        x_cut  = cutoff * f
-        dx_cut = cutoff * df
+        dSnT[j]   = (dS * f + S * df) * _INV_SQRT_PI
+
+        x_cut = cutoff * f
         Hcv, Hcx, Hcy = _voigt_H_and_grad(x_cut, y_arr[j], x_far)
-        Hc[j]  = Hcv
-        dHc[j] = Hcx * dx_cut + Hcy * dy_arr[j]
+        Hc[j]   = Hcv
+        dHcT[j] = Hcx * (cutoff * df) + Hcy * dyT[j]     # x_cut moves with T (via f)
+        dHcp[j] = Hcy * dyp[j]                           # x_cut p-independent
+        dHcv[j] = Hcy * dyv[j]
     end
 
-    σ    = zeros(Float64, n_ν)
-    dσdT = zeros(Float64, n_ν)
+    σ  = zeros(Float64, n_ν)
+    dT = zeros(Float64, n_ν)
+    dp = zeros(Float64, n_ν)
+    dv = zeros(Float64, n_ν)
     invc = 1.0 / cutoff
+    invc2 = invc * invc
     @inbounds for i in 1:n_ν
-        ν    = ν_grid.ν[i]
-        acc  = 0.0
-        dacc = 0.0
+        ν = ν_grid.ν[i]
+        acc = 0.0; aT = 0.0; ap = 0.0; av = 0.0
         for j in 1:n_L
             Δν = ν - ν0[j]
             abs(Δν) > cutoff && continue
-            x  = Δν * f_arr[j]
-            dx = Δν * df_arr[j]
+            f = f_arr[j]
+            x = Δν * f
             H, Hx, Hy = _voigt_H_and_grad(x, y_arr[j], x_far)
-            dH = Hx * dx + Hy * dy_arr[j]
+            # ∂x: T via f, p/vs via the centre shift (∂x/∂{p,vs} = −∂ν0·f).
+            dHt = Hx * (Δν * df_arr[j]) + Hy * dyT[j]
+            dHp = Hx * (-dν0p[j] * f)   + Hy * dyp[j]
+            dHv = Hx * (-dν0v[j] * f)   + Hy * dyv[j]
             pedfac = 2.0 - (Δν * invc)^2
-            ped    = pedfac * Hc[j]
-            dped   = pedfac * dHc[j]
-            acc  += Sn[j]  * (H - ped)
-            dacc += dSn[j] * (H - ped) + Sn[j] * (dH - dped)
+            # Pedestal prefactor moves with ν0 for p/vs (Δν depends on the centre).
+            dpedfac_p = 2.0 * Δν * dν0p[j] * invc2
+            dpedfac_v = 2.0 * Δν * dν0v[j] * invc2
+            Hcj = Hc[j]
+            dpedT = pedfac * dHcT[j]
+            dpedp = dpedfac_p * Hcj + pedfac * dHcp[j]
+            dpedv = dpedfac_v * Hcj + pedfac * dHcv[j]
+            Hmped = H - pedfac * Hcj
+            Snj = Sn[j]
+            acc += Snj * Hmped
+            aT  += dSnT[j] * Hmped + Snj * (dHt - dpedT)
+            ap  += Snj * (dHp - dpedp)
+            av  += Snj * (dHv - dpedv)
         end
         if acc > 0.0
-            σ[i]    = acc
-            dσdT[i] = dacc
-        end   # clamped region: σ = 0, dσ/dT = 0
+            σ[i] = acc; dT[i] = aT; dp[i] = ap; dv[i] = av
+        end   # clamped: σ = 0 and all derivatives 0
     end
 
-    return σ, dσdT
+    return (σ=σ, dT=dT, dp=dp, dself=dv)
 end

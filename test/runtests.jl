@@ -1005,7 +1005,7 @@ using LinearAlgebra
             AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.0e-4, nlev)))
         end
         # VMR-block max |Δ| between analytic and FD Jacobians at a given layering.
-        function vmr_block_diff(nlev)
+        function vmr_block_diff(nlev; vmr_coupling=true)
             prof = build(nlev)
             spec = StateVectorSpec(nlev, [CO2]; include_temperature=false,
                                    include_tsfc=true, include_emissivity=true)
@@ -1015,15 +1015,15 @@ using LinearAlgebra
                                             observable=:bt, fm_kwargs=fm)
             an = analytic_jacobian(prof, linelists, spec; iasi=iasi,
                                    T_sfc=290.0, ε_sfc=0.98, observable=:bt,
-                                   apply_continuum=false, with_ils=true)
+                                   apply_continuum=false, with_ils=true,
+                                   vmr_coupling=vmr_coupling)
             co2 = spec.vmr_ranges[1][2]
             return (fd=fd, an=an, spec=spec,
-                    vmr = maximum(abs.(an.K[:, co2] .- fd.K[:, co2])),
                     rel = maximum(abs.(an.K[:, co2] .- fd.K[:, co2])) /
                           (maximum(abs.(fd.K[:, co2])) + 1e-30))
         end
 
-        r6  = vmr_block_diff(6)
+        r6  = vmr_block_diff(6)                          # coupling ON (default)
         r11 = vmr_block_diff(11)
 
         # Radiance/BT reproduced to round-off (analytic forward rebuild ≡ FM).
@@ -1035,20 +1035,23 @@ using LinearAlgebra
         @test maximum(abs.(r6.an.K[:, r6.spec.emis_index] .-
                            r6.fd.K[:, r6.spec.emis_index])) < 1e-4
 
-        # Dominant VMR term: agrees to <1% with ILS on; the residual is the
-        # deferred §2.1 CG-pressure/temperature coupling, which scales O(Δz) and
-        # so must *shrink* under finer layering (proof it is physics, not a bug).
-        @test r6.rel  < 0.01
-        @test r11.rel < r6.rel
+        # Phase 2b — full VMR coupling: matches FD to FD precision, like T columns.
+        @test r6.rel  < 1e-5
+        @test r11.rel < 1e-5
+
+        # Phase 2 — dominant term only: ~few-% residual that is the deferred §2.1
+        # coupling, scaling O(Δz) (shrinks with finer layering — physics, not a bug).
+        off6  = vmr_block_diff(6;  vmr_coupling=false)
+        off11 = vmr_block_diff(11; vmr_coupling=false)
+        @test off6.rel  < 0.06
+        @test off11.rel < off6.rel
+        @test off6.rel  > 100 * r6.rel        # coupling demonstrably tightens it
 
         # VMR sensitivity sign: adding CO₂ over a colder atmosphere cools the
         # band, so the summed column response is negative on opaque channels.
         i_line = argmin(r6.an.y0)
         co2blk = r6.an.K[:, r6.spec.vmr_ranges[1][2]]
         @test sum(co2blk[i_line, :]) < 0.0
-
-        # VMR-only spec (Phase 2): analytic temperature path is off here.
-        @test true
     end
 
     # ── Jacobian Phase 3: analytic temperature Jacobian (∂σ/∂T) vs FD ─────────
@@ -1082,6 +1085,34 @@ using LinearAlgebra
         glm, gdm = IRSounderLBL.pressure_broadened_width(line, 0.5, T-h)
         @test dgl ≈ (glp - glm) / (2h) rtol=1e-6
         @test dgd ≈ (gdp - gdm) / (2h) rtol=1e-6
+    end
+
+    # ── Phase 2b: ∂σ/∂p and ∂σ/∂vmr_self (VMR-coupling atoms) vs FD ───────────
+    @testset "Jacobian — ∂σ/∂p & ∂σ/∂vmr_self (vs FD)" begin
+        mkC(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                                   Float32(0.07), Float32(0.08), E, Float32(0.75), Float32(-0.006))
+        mkW(ν0, S, E) = HITRANLine(Int8(1), Int8(1), ν0, S, 1.0,   # H2O: self-broadening on
+                                   Float32(0.09), Float32(0.45), E, Float32(0.70), Float32(0.005))
+        g = wavenumber_grid(698.0, 705.0, 0.002)
+        relnz(σ, a, fd) = let nz = findall(>(maximum(σ)*1e-6), σ)
+            maximum(abs.(a[nz] .- fd[nz])) / (maximum(abs.(fd[nz])) + 1e-300)
+        end
+        # CO₂ (no self): ∂σ/∂p; H₂O: ∂σ/∂p and ∂σ/∂vmr_self.
+        for (ll, T, p, vs) in ((HITRANLinelist([mkC(700.3, 2.0e-21, 250.0), mkC(701.4, 8.0e-22, 600.0)]), 260.0, 0.5, 0.0),
+                               (HITRANLinelist([mkW(700.6, 3.0e-21, 200.0), mkW(702.3, 1.2e-21, 450.0)]), 285.0, 0.9, 0.03))
+            gr = compute_voigt_cross_sections_grad(g, ll, T, p; vmr_self=vs)
+            @test maximum(abs.(gr.σ .- compute_voigt_cross_sections(g, ll, T, p; vmr_self=vs))) < 1e-30
+            hp = 1e-4
+            fdp = (compute_voigt_cross_sections(g, ll, T, p+hp; vmr_self=vs) .-
+                   compute_voigt_cross_sections(g, ll, T, p-hp; vmr_self=vs)) ./ (2hp)
+            @test relnz(gr.σ, gr.dp, fdp) < 1e-5
+            if vs > 0
+                hv = 1e-5
+                fdv = (compute_voigt_cross_sections(g, ll, T, p; vmr_self=vs+hv) .-
+                       compute_voigt_cross_sections(g, ll, T, p; vmr_self=vs-hv)) ./ (2hv)
+                @test relnz(gr.σ, gr.dself, fdv) < 1e-5
+            end
+        end
     end
 
     @testset "Jacobian — analytic temperature Jacobian (vs FD harness)" begin

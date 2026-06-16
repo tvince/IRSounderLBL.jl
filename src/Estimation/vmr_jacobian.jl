@@ -23,11 +23,23 @@ which is exact (it reduces to the `cg_temperature_mass` weight `frac` at the wel
 point). The **`T_sfc` and `ε` columns are fully exact** (Phase-1 `∂I/∂T_sfc`, `∂I/∂ε`
 have no τ-coupling).
 
-DEFERRED to "Phase 2b" (needs `∂σ/∂p` and the H₂O self term — see roadmap §2.1):
-the CG-*pressure* coupling `∂σ/∂p·∂p_cg/∂VMR`, H₂O self-broadening `∂σ/∂vmr_self`,
-and the quadratic continuum/CIA term. For a clean well-mixed LBL absorber with
-continuum off these are second-order; the FD harness validates how much they matter
-(`test/runtests.jl`).
+## Phase 2b: VMR coupling (`vmr_coupling=true`, default)
+
+Beyond the dominant term, a level VMR also moves the layer's CG *pressure* and CG
+*temperature* (which shift `σ`) and, for H₂O, its self-broadening fraction. These are
+added analytically:
+
+    ∂σ/∂p_cg·∂p_cg/∂VMR  +  ∂σ/∂T_cg·∂T_cg/∂VMR  +  ∂σ/∂vmr_self·∂vmr_self/∂VMR
+
+via `compute_voigt_cross_sections_grad` (`σ`, `∂σ/∂T`, `∂σ/∂p`, `∂σ/∂vmr_self` in one
+pass). `∂p_cg/∂VMR` is a central difference of the scalar `cg_pressure` (robust through
+its `v1≈v2` branch); `∂T_cg/∂VMR = ∂T_cg/∂p_cg·∂p_cg/∂VMR` (zero for `:mass_weighted`,
+whose `T_cg` is VMR-independent); `∂vmr_self/∂VMR = ∂vmr_cg/∂VMR` for H₂O (else 0).
+This brings the VMR columns to FD precision (~1e-7), matching the T columns. Set
+`vmr_coupling=false` for the faster dominant-only term (the residual is then the
+coupling, ~few-% on coarse grids, O(Δz)). Coupling is skipped (dominant-only) when
+line mixing is active. STILL DEFERRED: the quadratic continuum/CIA term in `∂τ/∂VMR`
+(only with `apply_continuum=true` for H₂O/CO₂).
 
 ## Phase 3: temperature columns
 
@@ -123,14 +135,15 @@ end
                       continua=(:h2o,:co2,:co2_cia,:n2,:o2),
                       with_ils=true, apodization=:gaussian,
                       line_mixing=nothing, T_method=:logp_at_pcg,
-                      source_function=:cim, backend=CPU()) -> Jacobian
+                      source_function=:cim, vmr_coupling=true, backend=CPU()) -> Jacobian
 
 Analytic Jacobian `K = ∂y/∂x` of the IASI forward model about the state packed from
 `prof` (+ `T_sfc`, `ε_sfc`), returned as the same `Jacobian` struct as the FD harness
 so the two are directly comparable. `observable` is `:bt` (default) or `:radiance`.
 
-Populates the **VMR columns** (dominant number-density term; see file docstring),
-the **temperature-level columns** (`∂B/∂T` source + `∂σ/∂T` opacity; requires
+Populates the **VMR columns** (dominant number-density term + full CG-pressure/
+temperature/self coupling when `vmr_coupling`; see file docstring), the
+**temperature-level columns** (`∂B/∂T` source + `∂σ/∂T` opacity; requires
 `line_mixing=nothing`), the **`T_sfc` column**, and the **`ε` column**. The forward
 configuration mirrors `iasi_forward_model` and is run with the cutoff-freezing policy
 (`dptmn=0.0`, full line set) so it matches `finite_difference_jacobian`.
@@ -153,10 +166,14 @@ function analytic_jacobian(prof::AtmosphericProfile,
                            line_mixing::Union{Nothing, AbstractLineMixing} = nothing,
                            T_method::Symbol      = :logp_at_pcg,
                            source_function::Symbol = :cim,
+                           vmr_coupling::Bool    = true,
                            backend               = CPU())::Jacobian
     observable in (:bt, :radiance) ||
         error("observable must be :bt or :radiance, got :$observable")
     need_T = spec.include_temperature
+    # Phase-2b VMR coupling (∂σ/∂{p,T,vmr_self}·∂{p_cg,T_cg,vmr_self}/∂VMR) is a
+    # plain-Voigt path; it is skipped (dominant term only) when line mixing is active.
+    do_coupling = vmr_coupling && line_mixing === nothing
     (need_T && line_mixing !== nothing) &&
         error("analytic_jacobian: ∂σ/∂T with line mixing is deferred (roadmap §6.4); " *
               "pass line_mixing=nothing or build the spec with include_temperature=false.")
@@ -190,15 +207,30 @@ function analytic_jacobian(prof::AtmosphericProfile,
     #          mass frac (:mass_weighted) — matches layer_properties exactly.
     τ_layers = zeros(Float64, n_ν_hi, n_layers)
     τ_sp = Dict{GasSpecies, Matrix{Float64}}()
+    retr_set = Set{GasSpecies}()
     for s in retrieved
-        haskey(linelists, s) && (τ_sp[s] = zeros(Float64, n_ν_hi, n_layers))
+        if haskey(linelists, s)
+            τ_sp[s] = zeros(Float64, n_ν_hi, n_layers)
+            push!(retr_set, s)
+        end
     end
-    dτdTcg = Dict{GasSpecies, Matrix{Float64}}()
+    dτdTcg = Dict{GasSpecies, Matrix{Float64}}()        # ∂τ/∂T_cg (all gases, T columns)
     wT     = Dict{GasSpecies, Vector{Float64}}()
     if need_T
         for s in keys(linelists)
             dτdTcg[s] = zeros(Float64, n_ν_hi, n_layers)
             wT[s]     = zeros(Float64, n_layers)
+        end
+    end
+    # Phase-2b coupling: ∂τ/∂{p_cg,T_cg,vmr_self} for the RETRIEVED gases.
+    dτdp  = Dict{GasSpecies, Matrix{Float64}}()
+    dτdTc = Dict{GasSpecies, Matrix{Float64}}()
+    dτdvs = Dict{GasSpecies, Matrix{Float64}}()
+    if do_coupling
+        for s in retr_set
+            dτdp[s]  = zeros(Float64, n_ν_hi, n_layers)
+            dτdTc[s] = zeros(Float64, n_ν_hi, n_layers)
+            dτdvs[s] = zeros(Float64, n_ν_hi, n_layers)
         end
     end
 
@@ -210,15 +242,25 @@ function analytic_jacobian(prof::AtmosphericProfile,
             T_cg_sp  = layers.T_cg[sp][k]
             vmr_self = (sp == H2O) ? vmr : 0.0
             coef     = vmr * layers.Δp[k] * Nair_per_vmr
-            if need_T
-                # Plain-Voigt path (LM-∂T deferred): σ and ∂σ/∂T together.
-                σ_sp, dσ_sp = compute_voigt_cross_sections_dT(ν_grid_hi, ll, T_cg_sp,
-                                                              p_cg_atm; vmr_self=vmr_self,
-                                                              cutoff=cutoff)
-                dτdTcg[sp][:, k] .= dσ_sp .* coef
-                p1, p2  = prof.pressure[k], prof.pressure[k+1]
-                wT[sp][k] = T_method == :mass_weighted ? _cg_mass_frac(p1, p2) :
-                            (log(layers.p_cg[sp][k] / p1) / log(p2 / p1))
+            is_retr  = sp in retr_set
+            if need_T || (do_coupling && is_retr)
+                # One Faddeeva pass → σ and the needed derivatives (plain Voigt).
+                gr = compute_voigt_cross_sections_grad(ν_grid_hi, ll, T_cg_sp, p_cg_atm;
+                                                       vmr_self=vmr_self, cutoff=cutoff)
+                σ_sp = gr.σ
+                if need_T
+                    dτdTcg[sp][:, k] .= gr.dT .* coef
+                    p1, p2 = prof.pressure[k], prof.pressure[k+1]
+                    wT[sp][k] = T_method == :mass_weighted ? _cg_mass_frac(p1, p2) :
+                                (log(layers.p_cg[sp][k] / p1) / log(p2 / p1))
+                end
+                if do_coupling && is_retr
+                    # gr.dp is ∂σ/∂p in atm⁻¹; the p_cg weight below is in hPa, so
+                    # convert to per-hPa (1 atm = 1013.25 hPa) for a consistent chain.
+                    dτdp[sp][:, k]  .= gr.dp    .* (coef / 1013.25)
+                    dτdTc[sp][:, k] .= gr.dT    .* coef
+                    dτdvs[sp][:, k] .= gr.dself .* coef
+                end
             else
                 σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll,
                                               T_cg_sp, p_cg_atm;
@@ -226,7 +268,7 @@ function analytic_jacobian(prof::AtmosphericProfile,
             end
             contrib = σ_sp .* coef
             τ_layers[:, k] .+= contrib
-            haskey(τ_sp, sp) && (τ_sp[sp][:, k] .= contrib)
+            is_retr && (τ_sp[sp][:, k] .= contrib)
         end
     end
 
@@ -284,33 +326,60 @@ function analytic_jacobian(prof::AtmosphericProfile,
     y0 = observable === :bt ? brightness_temperature(ν_iasi, R_iasi) : R_iasi
     K  = zeros(Float64, n_ch, spec.n)
 
-    # VMR blocks.  ∂vmr_cg_s[k]/∂VMR_level_j: layer k=j contributes via v1 (=level j),
-    # layer k=j−1 via v2 (=level j).  Precompute the (g1[k], g2[k]) weights per layer.
+    # VMR blocks. Level j enters layer k=j through its lower boundary and layer k=j−1
+    # through its upper boundary. The dominant term is σ·∂vmr_cg/∂v (Phase 2); when
+    # do_coupling, add ∂σ/∂{p_cg,T_cg,vmr_self}·∂{p_cg,T_cg,vmr_self}/∂v (Phase 2b).
+    # Per layer we precompute the level-weight pairs of each CG quantity: vmr_cg
+    # (analytic), p_cg (central difference of the scalar cg_pressure — robust through
+    # its v1≈v2 branch), and T_cg = ∂T_cg/∂p_cg·∂p_cg/∂v (0 for :mass_weighted, whose
+    # T_cg is VMR-independent). vmr_self moves only for H₂O (vmr_self = vmr_cg).
     dI_hi = Vector{Float64}(undef, n_ν_hi)
     for (s, r) in spec.vmr_ranges
         haskey(τ_sp, s) || continue   # continuum-only species: dominant LBL term is 0
         τs   = τ_sp[s]
         vcg  = layers.vmr_cg[s]
         vlev = prof.vmr[s]
-        g1 = Vector{Float64}(undef, n_layers)   # ∂vmr_cg[k]/∂v_level[k]
-        g2 = Vector{Float64}(undef, n_layers)   # ∂vmr_cg[k]/∂v_level[k+1]
+        is_h2o = s == H2O
+        gV1 = Vector{Float64}(undef, n_layers); gV2 = similar(gV1)
+        gP1 = zeros(Float64, n_layers); gP2 = zeros(Float64, n_layers)
+        gT1 = zeros(Float64, n_layers); gT2 = zeros(Float64, n_layers)
         for k in 1:n_layers
-            g1[k], g2[k] = _cg_column_vmr_grad(Float64(vlev[k]), Float64(vlev[k+1]),
-                                               Float64(prof.pressure[k]),
-                                               Float64(prof.pressure[k+1]))
+            v1, v2 = Float64(vlev[k]), Float64(vlev[k+1])
+            p1, p2 = Float64(prof.pressure[k]), Float64(prof.pressure[k+1])
+            gV1[k], gV2[k] = _cg_column_vmr_grad(v1, v2, p1, p2)
+            if do_coupling
+                h1 = max(abs(v1), 1e-300) * 1e-6
+                h2 = max(abs(v2), 1e-300) * 1e-6
+                gP1[k] = (cg_pressure(v1+h1, v2, p1, p2) - cg_pressure(v1-h1, v2, p1, p2)) / (2h1)
+                gP2[k] = (cg_pressure(v1, v2+h2, p1, p2) - cg_pressure(v1, v2-h2, p1, p2)) / (2h2)
+                if T_method != :mass_weighted     # T_cg = T(p_cg); ∂T_cg/∂p_cg·∂p_cg/∂v
+                    dTcg_dpcg = (Float64(prof.temperature[k+1]) - Float64(prof.temperature[k])) /
+                                (layers.p_cg[s][k] * log(p2 / p1))
+                    gT1[k] = dTcg_dpcg * gP1[k]
+                    gT2[k] = dTcg_dpcg * gP2[k]
+                end
+            end
         end
         for j in 1:spec.n_levels
             col = r[j]
             fill!(dI_hi, 0.0)
-            # layer k = j (level j is its lower boundary → weight g1[j])
+            # layer k = j (level j is the lower boundary)
             if j <= n_layers && vcg[j] != 0.0
-                w = g1[j] / vcg[j]
-                @inbounds @views dI_hi .+= dI_dτ[:, j] .* τs[:, j] .* w
+                @inbounds @views dI_hi .+= dI_dτ[:, j] .* τs[:, j] .* (gV1[j] / vcg[j])
+                if do_coupling
+                    @inbounds @views dI_hi .+= dI_dτ[:, j] .*
+                        (dτdp[s][:, j] .* gP1[j] .+ dτdTc[s][:, j] .* gT1[j])
+                    is_h2o && (@inbounds @views dI_hi .+= dI_dτ[:, j] .* dτdvs[s][:, j] .* gV1[j])
+                end
             end
-            # layer k = j−1 (level j is its upper boundary → weight g2[j−1])
+            # layer k = j−1 (level j is the upper boundary)
             if j >= 2 && vcg[j-1] != 0.0
-                w = g2[j-1] / vcg[j-1]
-                @inbounds @views dI_hi .+= dI_dτ[:, j-1] .* τs[:, j-1] .* w
+                @inbounds @views dI_hi .+= dI_dτ[:, j-1] .* τs[:, j-1] .* (gV2[j-1] / vcg[j-1])
+                if do_coupling
+                    @inbounds @views dI_hi .+= dI_dτ[:, j-1] .*
+                        (dτdp[s][:, j-1] .* gP2[j-1] .+ dτdTc[s][:, j-1] .* gT2[j-1])
+                    is_h2o && (@inbounds @views dI_hi .+= dI_dτ[:, j-1] .* dτdvs[s][:, j-1] .* gV2[j-1])
+                end
             end
             colvec = to_channel(dI_hi)
             # log-VMR: ∂y/∂(log v) = v·∂y/∂v
