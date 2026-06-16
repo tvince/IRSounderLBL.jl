@@ -272,17 +272,62 @@ function analytic_jacobian(prof::AtmosphericProfile,
         end
     end
 
+    # Continuum/CIA layer optical depth: τ_cont = Σ(continua)·dz(T_mid), evaluated at
+    # mid-layer VMR/T. Factored into a closure so the Phase-2c derivatives below
+    # finite-difference the *same* expression that builds the forward τ.
+    vmr_co2_default = 4.15e-4
+    cont_layer(k, vh2o, vco2, Tm) = begin
+        pm  = layers.p_mid[k]
+        dz  = _dp_to_dz_cm(layers.Δp[k], pm, Tm)
+        vdry = 1.0 - vh2o
+        τc  = zeros(Float64, n_ν_hi)
+        (:h2o     in continua) && (τc .+= h2o_continuum(ν_grid_hi, vh2o, pm, Tm) .* dz)
+        (:co2     in continua) && (τc .+= co2_continuum(ν_grid_hi, vco2, pm, Tm) .* dz)
+        (:co2_cia in continua) && (τc .+= co2_cia(ν_grid_hi, vco2, pm, Tm) .* dz)
+        (:n2      in continua) && (τc .+= n2_cia(ν_grid_hi, 0.78084 * vdry, pm, Tm) .* dz)
+        (:o2      in continua) && (τc .+= o2_cia(ν_grid_hi, 0.20946 * vdry, pm, Tm) .* dz)
+        return τc
+    end
+    vmrmid(sp, k, default) = haskey(layers.vmr_mid, sp) ? layers.vmr_mid[sp][k] : default
+
     if apply_continuum
         for k in 1:n_layers
-            vmr_h2o = haskey(layers.vmr_mid, H2O) ? layers.vmr_mid[H2O][k] : 0.0
-            vmr_co2 = haskey(layers.vmr_mid, CO2) ? layers.vmr_mid[CO2][k] : 4.15e-4
-            dz_cm   = _dp_to_dz_cm(layers.Δp[k], layers.p_mid[k], layers.T_mid[k])
-            vmr_dry = 1.0 - vmr_h2o
-            (:h2o     in continua) && (τ_layers[:, k] .+= h2o_continuum(ν_grid_hi, vmr_h2o, layers.p_mid[k], layers.T_mid[k]) .* dz_cm)
-            (:co2     in continua) && (τ_layers[:, k] .+= co2_continuum(ν_grid_hi, vmr_co2, layers.p_mid[k], layers.T_mid[k]) .* dz_cm)
-            (:co2_cia in continua) && (τ_layers[:, k] .+= co2_cia(ν_grid_hi, vmr_co2, layers.p_mid[k], layers.T_mid[k]) .* dz_cm)
-            (:n2      in continua) && (τ_layers[:, k] .+= n2_cia(ν_grid_hi, 0.78084 * vmr_dry, layers.p_mid[k], layers.T_mid[k]) .* dz_cm)
-            (:o2      in continua) && (τ_layers[:, k] .+= o2_cia(ν_grid_hi, 0.20946 * vmr_dry, layers.p_mid[k], layers.T_mid[k]) .* dz_cm)
+            τ_layers[:, k] .+= cont_layer(k, vmrmid(H2O, k, 0.0),
+                                          vmrmid(CO2, k, vmr_co2_default), layers.T_mid[k])
+        end
+    end
+
+    # ── Phase 2c: continuum/CIA derivatives (central FD of the cheap continuum) ──
+    # The continuum depends on VMR (H₂O/CO₂, incl. n₂/o₂ via vmr_dry) and on T (its
+    # own T-dependence + dz∝T). Central-difference cont_layer and chain through the
+    # p_mid interpolation weight wM (∂{vmr,T}_mid/∂level). Only meaningful when
+    # apply_continuum; VMR part is gated by do_coupling, T part by need_T.
+    cont_vmr_h2o = apply_continuum && do_coupling && (H2O in retr_set)
+    cont_vmr_co2 = apply_continuum && do_coupling && (CO2 in retr_set)
+    cont_T       = apply_continuum && need_T
+    dτc_dvh2o = cont_vmr_h2o ? zeros(Float64, n_ν_hi, n_layers) : nothing
+    dτc_dvco2 = cont_vmr_co2 ? zeros(Float64, n_ν_hi, n_layers) : nothing
+    dτc_dTm   = cont_T       ? zeros(Float64, n_ν_hi, n_layers) : nothing
+    wM        = zeros(Float64, n_layers)        # ∂(mid quantity)/∂level[k+1]
+    if cont_vmr_h2o || cont_vmr_co2 || cont_T
+        for k in 1:n_layers
+            wM[k] = log(layers.p_mid[k] / prof.pressure[k]) /
+                    log(prof.pressure[k+1] / prof.pressure[k])
+            vh = vmrmid(H2O, k, 0.0)
+            vc = vmrmid(CO2, k, vmr_co2_default)
+            Tm = layers.T_mid[k]
+            if cont_vmr_h2o
+                h = max(abs(vh), 1e-30) * 1e-6
+                dτc_dvh2o[:, k] .= (cont_layer(k, vh+h, vc, Tm) .- cont_layer(k, vh-h, vc, Tm)) ./ (2h)
+            end
+            if cont_vmr_co2
+                h = max(abs(vc), 1e-30) * 1e-6
+                dτc_dvco2[:, k] .= (cont_layer(k, vh, vc+h, Tm) .- cont_layer(k, vh, vc-h, Tm)) ./ (2h)
+            end
+            if cont_T
+                hT = 0.05
+                dτc_dTm[:, k] .= (cont_layer(k, vh, vc, Tm+hT) .- cont_layer(k, vh, vc, Tm-hT)) ./ (2hT)
+            end
         end
     end
 
@@ -360,6 +405,9 @@ function analytic_jacobian(prof::AtmosphericProfile,
                 end
             end
         end
+        # Continuum/CIA VMR derivative for this species (Phase 2c; H₂O/CO₂ only),
+        # chained through the p_mid interpolation weight wM.
+        dτc_v = s == H2O ? dτc_dvh2o : (s == CO2 ? dτc_dvco2 : nothing)
         for j in 1:spec.n_levels
             col = r[j]
             fill!(dI_hi, 0.0)
@@ -380,6 +428,10 @@ function analytic_jacobian(prof::AtmosphericProfile,
                         (dτdp[s][:, j-1] .* gP2[j-1] .+ dτdTc[s][:, j-1] .* gT2[j-1])
                     is_h2o && (@inbounds @views dI_hi .+= dI_dτ[:, j-1] .* dτdvs[s][:, j-1] .* gV2[j-1])
                 end
+            end
+            if dτc_v !== nothing      # continuum/CIA contribution (not gated by vcg)
+                j <= n_layers && (@inbounds @views dI_hi .+= dI_dτ[:, j]   .* dτc_v[:, j]   .* (1.0 - wM[j]))
+                j >= 2        && (@inbounds @views dI_hi .+= dI_dτ[:, j-1] .* dτc_v[:, j-1] .* wM[j-1])
             end
             colvec = to_channel(dI_hi)
             # log-VMR: ∂y/∂(log v) = v·∂y/∂v
@@ -402,6 +454,10 @@ function analytic_jacobian(prof::AtmosphericProfile,
                 if j >= 2
                     @inbounds @views dI_hi .+= dI_dτ[:, j-1] .* M[:, j-1] .* w[j-1]
                 end
+            end
+            if cont_T          # Phase 2c: continuum/CIA T-dependence (incl. dz∝T)
+                j <= n_layers && (@inbounds @views dI_hi .+= dI_dτ[:, j]   .* dτc_dTm[:, j]   .* (1.0 - wM[j]))
+                j >= 2        && (@inbounds @views dI_hi .+= dI_dτ[:, j-1] .* dτc_dTm[:, j-1] .* wM[j-1])
             end
             @inbounds K[:, spec.temp_range[j]] .= to_channel(dI_hi)
         end

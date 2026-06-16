@@ -1152,6 +1152,50 @@ using LinearAlgebra
         @test an.K[i_line, spec.temp_range[1]] > 0.0
     end
 
+    # ── Phase 2c: continuum/CIA derivatives in the VMR & temperature columns ──
+    @testset "Jacobian — continuum coupling (apply_continuum=true) vs FD" begin
+        iasi = IASIInstrument(699.0, 705.0, 0.5, 13, 2.0, 0.5)
+        nlev = 6
+        p = collect(range(1000.0, 200.0; length=nlev))
+        T = 288.0 .+ (225.0 - 288.0) .* (1000.0 .- p) ./ 800.0
+        z = (1000.0 .- p) ./ 66.0
+        mkW(ν0, S, E) = HITRANLine(Int8(1), Int8(1), ν0, S, 1.0,
+                                   Float32(0.09), Float32(0.45), E, Float32(0.70), Float32(0.005))
+        mkC(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                                   Float32(0.07), Float32(0.08), E, Float32(0.75), Float32(-0.006))
+
+        function check(sp, ll, vmr, conts)
+            prof = AtmosphericProfile(p, T, z, vmr)
+            spec = StateVectorSpec(nlev, [sp]; include_temperature=true,
+                                   include_tsfc=true, include_emissivity=true)
+            fm = (iasi=iasi, apply_continuum=true, continua=conts, with_ils=true)
+            fd = finite_difference_jacobian(prof, ll, spec; T_sfc=290.0, ε_sfc=0.98,
+                    observable=:bt,
+                    steps=default_fd_steps(spec; δT=0.1, δtsfc=0.1, δlogvmr=1e-3, δε=1e-3),
+                    fm_kwargs=fm)
+            an_on = analytic_jacobian(prof, ll, spec; iasi=iasi, T_sfc=290.0, ε_sfc=0.98,
+                        observable=:bt, apply_continuum=true, continua=conts, with_ils=true)
+            # vmr_coupling=false drops the continuum VMR derivative too → larger residual.
+            an_off = analytic_jacobian(prof, ll, spec; iasi=iasi, T_sfc=290.0, ε_sfc=0.98,
+                        observable=:bt, apply_continuum=true, continua=conts, with_ils=true,
+                        vmr_coupling=false)
+            vcol = spec.vmr_ranges[1][2]; tr = spec.temp_range
+            rel(an, c) = maximum(abs.(an.K[:,c] .- fd.K[:,c])) / (maximum(abs.(fd.K[:,c])) + 1e-30)
+            @test maximum(abs.(an_on.y0 .- fd.y0)) < 1e-9
+            @test rel(an_on, vcol) < 1e-5             # VMR column FD-exact with continuum
+            @test rel(an_on, tr)   < 1e-5             # T column FD-exact with continuum
+            @test maximum(abs.(an_on.K[:,spec.tsfc_index] .- fd.K[:,spec.tsfc_index])) < 1e-4
+            @test maximum(abs.(an_on.K[:,spec.emis_index] .- fd.K[:,spec.emis_index])) < 1e-4
+            @test rel(an_off, vcol) > 10 * rel(an_on, vcol)   # continuum VMR term matters
+        end
+
+        h2o = [0.01 * exp(-3.0*(1000.0-pk)/800.0) for pk in p]
+        check(H2O, Dict(H2O => HITRANLinelist([mkW(700.6,3.0e-21,200.0), mkW(702.3,1.2e-21,450.0)])),
+              Dict(H2O=>h2o), (:h2o,))
+        check(CO2, Dict(CO2 => HITRANLinelist([mkC(700.5,2.0e-21,250.0), mkC(702.0,8.0e-22,600.0)])),
+              Dict(CO2=>fill(4.0e-4,nlev)), (:co2,))
+    end
+
     # ── Jacobian Phase 5: optimal-estimation retrieval (synthetic closed loop) ──
     @testset "Optimal estimation — synthetic closed-loop retrieval" begin
         mk(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
