@@ -385,6 +385,86 @@ using LinearAlgebra
         @test g.n == iasi.n_channels
     end
 
+    # ── IASI L1C reader (EPS-native, synthetic round-trip) ────────────────
+    @testset "IASI L1C reader — synthetic .nat round-trip" begin
+        M = IRSounderLBL
+        put_i4!(b,o,v) = (b[o+1:o+4] = reinterpret(UInt8, [hton(Int32(v))]))
+        put_i2!(b,o,v) = (b[o+1:o+2] = reinterpret(UInt8, [hton(Int16(v))]))
+        put_u4!(b,o,v) = (b[o+1:o+4] = reinterpret(UInt8, [hton(UInt32(v))]))
+        function grh(class, subclass, rsize)
+            gg = zeros(UInt8, 20)
+            gg[1] = UInt8(class); gg[2] = UInt8(class); gg[3] = UInt8(subclass)
+            put_u4!(gg, 4, rsize); return gg
+        end
+
+        mphr_p = Vector{UInt8}(codeunits("INSTRUMENT_ID = IASI\nSPACECRAFT_ID = M02\n"))
+        mphr = vcat(grh(1, 0, 20 + length(mphr_p)), mphr_p)
+        giadr = vcat(grh(5, 1, 84), zeros(UInt8, 64))
+        put_i2!(giadr, 20, 1); put_i2!(giadr, 22, 1); put_i2!(giadr, 42, 8700); put_i2!(giadr, 62, 7)
+
+        MDR_SIZE = 2728908
+        mdr = zeros(UInt8, MDR_SIZE); mdr[1:20] = grh(8, 2, MDR_SIZE)
+        put_i4!(mdr, M._OFF_NSFIRST, 1); put_i4!(mdr, M._OFF_NSLAST, 8461)
+        for s in 0:29, p in 0:3
+            q = s*4 + p
+            put_i4!(mdr, M._OFF_GEOLOC  + (q*2  )*4, round(Int, (-120.0 - q*0.001)/1e-6))
+            put_i4!(mdr, M._OFF_GEOLOC  + (q*2+1)*4, round(Int, ( 30.0 + q*0.002)/1e-6))
+            put_i4!(mdr, M._OFF_ANG_SAT + (q*2  )*4, round(Int, (5.0 + p)/1e-6))      # sat zenith
+            put_i4!(mdr, M._OFF_ANG_SAT + (q*2+1)*4, round(Int, (100.0 + q*0.05)/1e-6)) # sat azimuth
+            put_i4!(mdr, M._OFF_ANG_SUN + (q*2  )*4, round(Int, (40.0 + s*0.1)/1e-6))  # sun zenith
+            put_i4!(mdr, M._OFF_ANG_SUN + (q*2+1)*4, round(Int, (160.0 - q*0.1)/1e-6))  # sun azimuth
+            mdr[M._OFF_CLDFRAC + q + 1] = UInt8(q % 101)
+            mdr[M._OFF_LNDFRAC + q + 1] = UInt8(50)
+            base = M._OFF_SPEC + q*8700*2
+            for n in 0:8460
+                put_i2!(mdr, base + n*2, 7000)   # rad = 7000·1e-7·1e5 = 70.0 mW/(m²·sr·cm⁻¹)
+            end
+        end
+
+        path = tempname() * ".nat"
+        open(path, "w") do io; write(io, mphr); write(io, giadr); write(io, mdr); end
+        try
+            g = read_iasi_l1c(path)
+            @test nfov(g) == 120
+            @test g.mph["INSTRUMENT_ID"] == "IASI"
+            @test length(g.wno) == 8461 && g.wno[1] == 645.0 && g.wno[end] == 2760.0
+            @test all(≈(70.0), g.spc)                       # de-scaling exact
+            i = findfirst(k -> g.step[k]==1 && g.pix[k]==1, 1:nfov(g))
+            @test isapprox(g.lat[i], 30.0; atol=1e-6) && isapprox(g.lon[i], -120.0; atol=1e-6)
+            @test isapprox(g.zen[i], 5.0; atol=1e-6) && isapprox(g.sza[i], 40.0; atol=1e-6)
+            @test isapprox(g.azi[i], 100.0; atol=1e-6) && isapprox(g.saa[i], 160.0; atol=1e-6)
+
+            # Solar reflection angle φᵣ (Eq. 2.4): formula round-trip + special cases.
+            φexp = acosd(cosd(g.sza[i])*cosd(g.zen[i]) -
+                         sind(g.sza[i])*sind(g.zen[i])*cosd(g.saa[i]-g.azi[i]))
+            @test isapprox(g.sra[i], φexp; atol=1e-6)
+            # specular ⇒ glint (φᵣ≈0; acosd near 1 amplifies ~1e-16 round-off to ~1e-6°)
+            @test isapprox(M._solar_reflection_angle(30.0, 200.0, 30.0, 20.0), 0.0; atol=1e-3)
+            @test isapprox(M._solar_reflection_angle(30.0, 20.0, 30.0, 20.0), 60.0; atol=1e-9)  # anti-specular ⇒ 2θ
+            @test solar_reflection_angle(g) === g.sra
+
+            gc = read_iasi_l1c(path; cldlim=(0, 20))         # AVHRR cloud screening
+            @test 0 < nfov(gc) < nfov(g)
+            @test all(c -> 0 <= c <= 20, gc.cld)
+
+            lo, hi = extrema(g.sra)                          # sun-glint screening
+            @test lo < hi
+            mid = (lo + hi) / 2
+            gg = read_iasi_l1c(path; sralim=(0, mid))
+            @test 0 < nfov(gg) < nfov(g)
+            @test all(a -> a <= mid, gg.sra)
+
+            gw = read_iasi_l1c(path; wnolim=(700.0, 710.0), bright=true)
+            @test gw.wno[1] == 700.0 && gw.wno[end] == 710.0
+            @test gw.is_bt && all(bt -> 100 < bt < 400, gw.spc)
+
+            ν, R = measurement(g, i)                         # OE-measurement adapter
+            @test length(ν) == length(R) == 8461
+        finally
+            rm(path; force=true)
+        end
+    end
+
     # ── ViewingGeometry ───────────────────────────────────────────────────
     @testset "Viewing Geometry" begin
         nadir = nadir_geometry()

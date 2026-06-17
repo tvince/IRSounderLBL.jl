@@ -35,6 +35,7 @@ include("Sensor/geometry.jl")
 include("Sensor/ils.jl")
 include("Sensor/ils_fft.jl")
 include("Sensor/iasi.jl")
+include("Sensor/iasi_l1c.jl")
 
 # Parallel
 include("Parallel/strategy.jl")
@@ -91,6 +92,7 @@ export IASIInstrument, iasi_grid
 export ils_kernel, apply_ils, apply_ils_fft, ILSConvolver, ils_apply!
 export NORTON_BEER_COEFFS, norton_beer_apodization
 export iasi_forward_model
+export read_iasi_l1c, IASIL1CGranule, nfov, measurement, cloud_fraction, solar_reflection_angle
 
 # Parallel exports
 export ComputeBackend, detect_backend
