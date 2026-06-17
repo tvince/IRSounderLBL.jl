@@ -46,6 +46,9 @@ deps/src/
 docs/build/
 docs/site/
 
+# Large reference PDFs kept locally for reference (e.g. thesis), not in history.
+docs/*.pdf
+
 # Note: Manifest.toml is intentionally tracked to lock the dependency
 # snapshot behind the ARTS-validation results. Untrack once the package
 # is registered to General.
