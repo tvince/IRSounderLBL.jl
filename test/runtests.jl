@@ -1331,6 +1331,30 @@ using LinearAlgebra
     end
 
     # ── Jacobian Phase 5: optimal-estimation retrieval (synthetic closed loop) ──
+    # ── Apodized measurement covariance (IASI L1C, thesis §3.6) ───────────
+    @testset "Measurement covariance — apodized Se (IASI L1C)" begin
+        ν = collect(645.0:0.25:650.0)                    # contiguous IASI channels
+        Se = apodized_measurement_covariance(ν, 0.2)     # σ = 0.2, IASI defaults
+        @test issymmetric(Se) && isposdef(Se)
+        @test all(d -> isapprox(d, 0.2^2), diag(Se))     # diagonal = σ²
+        # inter-channel correlations match the Gaussian-apodization autocorrelation
+        σ2 = 0.2^2
+        @test isapprox(Se[1,2]/σ2, 0.705; atol=0.02)     # lag 1 ≈ 0.70
+        @test isapprox(Se[1,3]/σ2, 0.250; atol=0.02)     # lag 2 ≈ 0.25
+        @test isapprox(Se[1,4]/σ2, 0.044; atol=0.01)     # lag 3 ≈ 0.04
+        @test Se[1,5]/σ2 < 0.006                          # lag 4 ≈ 0.4% (thesis: >3 ⇒ <0.4%)
+        @test Se[1,6] == 0.0                              # lag 5 > max_lag ⇒ 0
+        # sparse channel selection (≥ max_lag apart) ⇒ effectively diagonal
+        Ssp = apodized_measurement_covariance([645.0, 647.0, 649.0], 0.2)
+        @test Ssp[1,2] == 0.0 && Ssp[1,3] == 0.0
+        # per-channel σ vector sets the diagonal; fwhm=0 ⇒ purely diagonal
+        σv = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+        Sv = apodized_measurement_covariance(collect(645.0:0.25:646.5), σv)
+        @test all(i -> isapprox(Sv[i,i], σv[i]^2), 1:7)
+        Sd = apodized_measurement_covariance(ν, 0.2; fwhm_gauss=0.0)
+        @test Sd[1,2] == 0.0 && all(d -> isapprox(d, 0.04), diag(Sd))
+    end
+
     @testset "Optimal estimation — synthetic closed-loop retrieval" begin
         mk(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
                                   Float32(0.07), Float32(0.08), E,
@@ -1378,6 +1402,16 @@ using LinearAlgebra
         @test isposdef(Symmetric(rB.S_hat))              # and positive-definite
         @test size(rB.A) == (specB.n, specB.n)
 
+        # (#2) Rodgers diagnostics + error budget.
+        m = length(yB)
+        @test size(rB.G) == (specB.n, m)                 # gain matrix (state × channel)
+        @test isapprox(rB.dof + rB.dfn, m; rtol=1e-10)   # DFS + DFN = m
+        @test rB.H ≥ 0.0 && isfinite(rB.H)               # Shannon info (bits)
+        # Budget closes exactly: Ŝ = Sᵣ + Sₛ when Sf=0 and St=Sa (thesis §3.4).
+        @test isapprox(rB.S_hat, rB.S_noise .+ rB.S_smoothing; rtol=1e-6)
+        @test isapprox(rB.S_noise, rB.S_noise')          # both budget terms symmetric
+        @test isapprox(rB.S_smoothing, rB.S_smoothing')
+
         # (C) VMR path through OE: recover a +20% CO₂ column, noiseless.
         specC = StateVectorSpec(nlev, [CO2]; include_temperature=false,
                                 include_tsfc=false, include_emissivity=false)
@@ -1392,6 +1426,14 @@ using LinearAlgebra
         @test rC.cost[end] < rC.cost[1]
         @test maximum(abs.(rC.y_fit .- yC)) < 0.05       # spectrum fit (K)
         @test sum(rC.x) > sum(xaC)                       # retrieved CO₂ increased toward truth
+
+        # (D) A non-diagonal (apodized) Se flows through the whole OE path.
+        νgrid  = collect(699.0:0.5:705.0)
+        SeA_ap = apodized_measurement_covariance(νgrid, 0.2; Δν_sample=0.5)
+        @test isposdef(SeA_ap)
+        rD = optimal_estimation(yA, specA, base, linelists;
+                                xa=[288.0], Sa=reshape([100.0],1,1), Se=SeA_ap, fm_kwargs=fm)
+        @test rD.converged && isapprox(rD.x[1], 298.0; atol=0.1)
     end
 
     # ── Phase 4: FFT-based ILS reproduces the direct convolution ──────────────

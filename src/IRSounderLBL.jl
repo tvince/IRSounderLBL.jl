@@ -44,6 +44,7 @@ include("Parallel/strategy.jl")
 include("Estimation/state_vector.jl")
 include("Estimation/jacobian_fd.jl")
 include("Estimation/vmr_jacobian.jl")
+include("Estimation/covariance.jl")
 include("Estimation/optimal_estimation.jl")
 
 # Utils exports
@@ -102,6 +103,7 @@ export StateVectorSpec, pack_state, unpack_state, state_labels
 export Jacobian, finite_difference_jacobian, default_fd_steps, column
 export analytic_jacobian
 export optimal_estimation, RetrievalResult
+export apodized_measurement_covariance
 export dB_dT
 
 end # module IRSounderLBL

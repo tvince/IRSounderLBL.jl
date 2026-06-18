@@ -21,19 +21,33 @@ State packing, units (log-VMR), and the fixed-field handling come from
 `StateVectorSpec` / `unpack_state`; `xₐ`, `Sₐ`, `Sₑ` all live in that state space.
 
 Diagnostics at the solution (Rodgers Ch. 2–3): posterior covariance
-`Ŝ = (Sₐ⁻¹ + KᵀSₑ⁻¹K)⁻¹`, averaging kernel `A = Ŝ·KᵀSₑ⁻¹K = ∂x̂/∂x`, and the degrees
-of freedom for signal `DOF = tr(A)`.
+`Ŝ = (Sₐ⁻¹ + KᵀSₑ⁻¹K)⁻¹`, averaging kernel `A = Ŝ·KᵀSₑ⁻¹K = ∂x̂/∂x`, gain matrix
+`G = Ŝ·KᵀSₑ⁻¹`, degrees of freedom for signal `DOF = tr(A)` and for noise
+`DFN = m − DOF`, Shannon information content `H = −½ log₂|I − A|` (bits), and the
+linear error budget `Ŝ = Sᵣ + Sₛ (+ S_f)` — retrieval-noise `Sᵣ = G Sₑ Gᵀ` and
+smoothing `Sₛ = (I − A) Sₐ (I − A)ᵀ` (forward-model/interferent `S_f` needs the
+interferents' Jacobians and is left to a separate helper). See thesis §3.2, §3.4.
 """
 
-using LinearAlgebra: Symmetric, inv, tr, I, cholesky, issuccess
+using LinearAlgebra: Symmetric, inv, tr, I, cholesky, issuccess, logabsdet
 
 """
     RetrievalResult
 
-Outcome of `optimal_estimation`. Fields: `x` (retrieved state), `spec`, `converged`,
-`n_iter`, `cost` (history, length `n_iter+1`), `S_hat` (posterior covariance), `A`
-(averaging kernel), `dof` (`tr A`), `chi2` (`(y−F)ᵀSₑ⁻¹(y−F)` at the solution),
-`y_fit` (`F(x̂)`), `ν` (channel grid).
+Outcome of `optimal_estimation`.
+
+State / fit: `x` (retrieved state), `spec`, `converged`, `n_iter`, `cost` (history,
+length `n_iter+1`), `y_fit` (`F(x̂)`), `ν` (channel grid), `chi2` (`(y−F)ᵀSₑ⁻¹(y−F)`).
+
+Rodgers diagnostics at the solution (thesis §3.2, §3.4):
+- `S_hat` — posterior covariance `Ŝ = (Sₐ⁻¹ + KᵀSₑ⁻¹K)⁻¹`
+- `A`     — averaging kernel `A = G·K = ∂x̂/∂x`
+- `G`     — gain matrix `G = Ŝ·KᵀSₑ⁻¹` (state × channel)
+- `dof`   — degrees of freedom for signal `tr(A)`
+- `dfn`   — degrees of freedom for noise `m − dof`
+- `H`     — Shannon information content `−½ log₂|I − A|` (bits)
+- `S_noise`     — retrieval-noise covariance `Sᵣ = G Sₑ Gᵀ`
+- `S_smoothing` — smoothing-error covariance `Sₛ = (I − A) Sₐ (I − A)ᵀ`
 """
 struct RetrievalResult
     x::Vector{Float64}
@@ -43,7 +57,12 @@ struct RetrievalResult
     cost::Vector{Float64}
     S_hat::Matrix{Float64}
     A::Matrix{Float64}
+    G::Matrix{Float64}
     dof::Float64
+    dfn::Float64
+    H::Float64
+    S_noise::Matrix{Float64}
+    S_smoothing::Matrix{Float64}
     chi2::Float64
     y_fit::Vector{Float64}
     ν::Vector{Float64}
@@ -52,7 +71,7 @@ end
 function Base.show(io::IO, r::RetrievalResult)
     print(io, "RetrievalResult($(r.converged ? "converged" : "NOT converged") in ",
           "$(r.n_iter) iter, DOF=$(round(r.dof, digits=2)), ",
-          "χ²=$(round(r.chi2, digits=3)), ", r.spec, ")")
+          "H=$(round(r.H, digits=2)) bits, χ²=$(round(r.chi2, digits=3)), ", r.spec, ")")
 end
 
 # Regularised cost J(x) given a residual (y − F) and state departure (x − xa).
@@ -179,13 +198,25 @@ function optimal_estimation(y::AbstractVector{<:Real},
         (converged || !accepted) && break
     end
 
-    # Diagnostics at the solution.
-    SeiK   = Se \ K
-    KtSeiK = Symmetric(K' * SeiK)
+    # Diagnostics at the solution (Rodgers Ch. 2–3; thesis §3.2, §3.4).
+    SeiK   = Se \ K                              # Sₑ⁻¹K            (n_y × n)
+    KtSeiK = Symmetric(K' * SeiK)                # KᵀSₑ⁻¹K          (n × n)
     S_hat  = Matrix(inv(Symmetric(Sa_inv .+ KtSeiK)))
-    A      = S_hat * (K' * SeiK)
+    G      = S_hat * SeiK'                        # gain Ŝ·KᵀSₑ⁻¹    (n × n_y)
+    A      = G * K                                # averaging kernel = G·K
+    dof    = tr(A)
+    m      = length(resid)
+    dfn    = m - dof
+    # Shannon information content H = −½ log₂|I − A| (bits). logabsdet gives ln|det|.
+    ld, _  = logabsdet(I - A)
+    H      = -0.5 * ld / log(2.0)
+    # Error budget: retrieval noise Sᵣ = G Sₑ Gᵀ, smoothing Sₛ = (I−A) Sₐ (I−A)ᵀ.
+    S_noise     = Matrix(Symmetric(G * (Se * G')))
+    ImA         = I - A
+    S_smoothing = Matrix(Symmetric(ImA * (Sa * ImA')))
     chi2   = resid' * (Se \ resid)
 
     return RetrievalResult(x, spec, converged, iter, cost_hist,
-                           S_hat, A, tr(A), chi2, F, νout)
+                           S_hat, A, G, dof, dfn, H, S_noise, S_smoothing,
+                           chi2, F, νout)
 end
