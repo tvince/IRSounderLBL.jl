@@ -1355,6 +1355,74 @@ using LinearAlgebra
         @test Sd[1,2] == 0.0 && all(d -> isapprox(d, 0.04), diag(Sd))
     end
 
+    @testset "A-priori covariance — build_sa (vertical correlation)" begin
+        nlev = 8
+        p = collect(range(1000.0, 100.0; length=nlev))
+        T = 288.0 .+ (220.0 - 288.0) .* (1000.0 .- p) ./ 900.0
+        z = (1000.0 .- p) ./ 66.0
+        base = AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.0e-4, nlev), H2O => fill(1e-3, nlev)))
+        spec = StateVectorSpec(nlev, [CO2, H2O]; include_temperature=true,
+                               include_tsfc=true, include_emissivity=true)
+
+        Sa = build_sa(spec, base; σ_T=2.0, σ_vmr=0.5, L_T=1.0, L_vmr=1.5,
+                      σ_tsfc=3.0, σ_emis=0.02)
+        @test size(Sa) == (spec.n, spec.n)
+        @test issymmetric(Sa) && isposdef(Sa)
+
+        # diagonals = σ² per block (c(0)=1); scalars set exactly.
+        @test all(i -> isapprox(Sa[i,i], 2.0^2), spec.temp_range)
+        for (_, r) in spec.vmr_ranges
+            @test all(i -> isapprox(Sa[i,i], 0.5^2), r)
+        end
+        @test isapprox(Sa[spec.tsfc_index, spec.tsfc_index], 9.0)
+        @test isapprox(Sa[spec.emis_index, spec.emis_index], 0.02^2)
+
+        # cross-field blocks are zero (T vs CO₂, CO₂ vs H₂O, profile vs scalars).
+        rT  = spec.temp_range
+        rC  = last(spec.vmr_ranges[1])
+        rH  = last(spec.vmr_ranges[2])
+        @test all(==(0.0), Sa[rT, rC]) && all(==(0.0), Sa[rC, rH])
+        @test all(==(0.0), Sa[rT, spec.tsfc_index]) && Sa[spec.tsfc_index, spec.emis_index] == 0.0
+
+        # correlation decays monotonically with log-pressure separation within a block.
+        i0 = first(rT)
+        cors = [Sa[i0, j] / (2.0^2) for j in rT]
+        @test cors[1] ≈ 1.0
+        @test all(diff(cors) .< 1e-12)                   # non-increasing away from the diagonal
+        @test 0.0 < cors[end] < cors[2] < 1.0
+
+        # per-species Dict control: O₃ gets its own σ/L.
+        spec2 = StateVectorSpec(nlev, [CO2, O3]; include_tsfc=false, include_emissivity=false)
+        base2 = AtmosphericProfile(p, T, z, Dict(CO2=>fill(4e-4,nlev), O3=>fill(1e-6,nlev)))
+        Sa2 = build_sa(spec2, base2; σ_vmr=Dict(CO2=>0.3, O3=>0.8),
+                       L_vmr=Dict(CO2=>2.0, O3=>0.5), kernel=:matern52)
+        @test all(i -> isapprox(Sa2[i,i], 0.3^2), spec2.vmr_ranges[1].second)
+        @test all(i -> isapprox(Sa2[i,i], 0.8^2), spec2.vmr_ranges[2].second)
+        # shorter L (O₃) ⇒ faster decay than CO₂ at the same lag.
+        c1 = first(spec2.vmr_ranges[1].second); c2 = first(spec2.vmr_ranges[2].second)
+        @test Sa2[c2, c2+1]/0.8^2 < Sa2[c1, c1+1]/0.3^2
+
+        # missing per-species Dict entry is an error; bad sizes/values caught.
+        @test_throws ErrorException build_sa(spec2, base2; σ_vmr=Dict(CO2=>0.3))
+        @test_throws ErrorException build_sa(spec, base; σ_T=fill(2.0, nlev-1))
+        @test_throws ErrorException build_sa(spec, base; kernel=:bogus)
+
+        # Headline smoothness property: the default kernel is continuous to 2nd order
+        # (parabolic, zero-slope top ⇒ no kink), unlike the C⁰ exponential cusp.
+        ε = 1e-4
+        @test abs(IRSounderLBL._corr(Val(:matern52), ε) - 1.0) / ε < ε   # slope→0 (smooth)
+        @test abs(IRSounderLBL._corr(Val(:sqexp),    ε) - 1.0) / ε < ε   # slope→0 (smooth)
+        @test (1.0 - IRSounderLBL._corr(Val(:exponential), ε)) / ε > 0.5 # cusp: slope→1
+        for k in (:matern52, :matern32, :exponential, :sqexp)
+            @test IRSounderLBL._corr(Val(k), 0.0) == 1.0
+            @test 0.0 < IRSounderLBL._corr(Val(k), 1.0) < 1.0
+            @test IRSounderLBL._corr(Val(k), 50.0) < 1e-3
+        end
+
+        # build_sa output drives optimal_estimation (shape/posdef compatible).
+        @test isposdef(Symmetric(Matrix(inv(Sa))))
+    end
+
     @testset "Optimal estimation — synthetic closed-loop retrieval" begin
         mk(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
                                   Float32(0.07), Float32(0.08), E,
