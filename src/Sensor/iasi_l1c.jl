@@ -139,10 +139,15 @@ function _parse_scalefactors(rec::Vector{UInt8})::Vector{Float64}
     nsfirst = [Int(_be_i2(rec, 22 + 2*(k-1))) for k in 1:10]
     nslast  = [Int(_be_i2(rec, 42 + 2*(k-1))) for k in 1:10]
     expo    = [Int(_be_i2(rec, 62 + 2*(k-1))) for k in 1:10]
+    # The band channel numbers are in the *absolute* IASI grid (ν = 0.25·(k−1), so
+    # the first L1C channel at 645 cm⁻¹ is absolute channel 2581), whereas the
+    # stored spectrum is indexed from sample 1. Band 1 starts at the first stored
+    # sample, so shift by NsFirst[1]−1 to map absolute channels → stored samples.
+    chan_offset = nsfirst[1] - 1
     scale = ones(Float64, _IASI_NSPEC)
     for b in 1:nb
-        lo = clamp(nsfirst[b], 1, _IASI_NSPEC)
-        hi = clamp(nslast[b],  1, _IASI_NSPEC)
+        lo = clamp(nsfirst[b] - chan_offset, 1, _IASI_NSPEC)
+        hi = clamp(nslast[b]  - chan_offset, 1, _IASI_NSPEC)
         lo <= hi && (scale[lo:hi] .= 10.0^(-expo[b]))
     end
     return scale
