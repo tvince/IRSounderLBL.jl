@@ -98,6 +98,10 @@ Retrieve the state `x` from the observed spectrum `y` by optimal estimation.
 - `Se` — measurement-error covariance (channel space); a `Diagonal` is efficient.
 - `x0` — first guess (default `xa`).
 - `method` — `:levenberg_marquardt` (default) or `:gauss_newton` (`γ ≡ 0`).
+- `ε_fixed` — surface emissivity used by the forward model when ε is **not** in the
+  state (default `1.0`, a blackbody surface). Set e.g. `0.98` for a sea surface. When
+  ε *is* retrieved (`spec.include_emissivity`), the state value is used and this is
+  ignored.
 - convergence: stop when the Rodgers step size `dᵢ² = Δxᵀ Ŝ⁻¹ Δx < conv_factor·n`.
 
 `fm_kwargs` is forwarded to both `analytic_jacobian` (for `K`) and `iasi_forward_model`
@@ -121,6 +125,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
                             γ_min::Float64 = 1e-4,
                             conv_factor::Float64 = 1e-2,
                             observable::Symbol = :bt,
+                            ε_fixed::Float64 = 1.0,
                             fm_kwargs = (;),
                             verbose::Bool = false)::RetrievalResult
     method in (:levenberg_marquardt, :gauss_newton) ||
@@ -135,15 +140,18 @@ function optimal_estimation(y::AbstractVector{<:Real},
     xa_v   = collect(Float64, xa)
     yv     = collect(Float64, y)
 
+    # Surface emissivity: from the state when retrieved, else the fixed scene value
+    # `ε_fixed` (`unpack_state`'s εs is the 1.0 fallback, used only when ε ∉ state).
+    _ε(εs) = spec.include_emissivity ? εs : ε_fixed
     # Forward-only F(x) (exact full model, frozen cutoff) for the line search.
     forward(x) = let (p, Ts, εs) = unpack_state(spec, x, base_prof)
-        νg, R, BT = iasi_forward_model(p, linelists; T_sfc=Ts, ε_sfc=εs,
+        νg, R, BT = iasi_forward_model(p, linelists; T_sfc=Ts, ε_sfc=_ε(εs),
                                        dptmn=0.0, fm_kwargs...)
         observable === :bt ? BT : R
     end
     # F(x) and K(x) together (analytic Jacobian's y0 matches `forward` to round-off).
     forward_jac(x) = let (p, Ts, εs) = unpack_state(spec, x, base_prof)
-        jac = analytic_jacobian(p, linelists, spec; T_sfc=Ts, ε_sfc=εs,
+        jac = analytic_jacobian(p, linelists, spec; T_sfc=Ts, ε_sfc=_ε(εs),
                                 observable=observable, fm_kwargs...)
         jac.y0, jac.K, collect(Float64, jac.ν)
     end
