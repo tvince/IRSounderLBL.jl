@@ -189,7 +189,7 @@ function analytic_jacobian(prof::AtmosphericProfile,
         4
     end
     Δν_hi = iasi.Δν / hrf
-    ν_grid_hi = wavenumber_grid(iasi.ν_min, iasi.ν_max, Δν_hi)
+    ν_grid_hi = _internal_grid(iasi, Δν_hi, with_ils)
     n_ν_hi = ν_grid_hi.n
 
     # ── 2. Layer properties ──────────────────────────────────────────────────

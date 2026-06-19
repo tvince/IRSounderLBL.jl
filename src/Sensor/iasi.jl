@@ -58,6 +58,27 @@ function iasi_grid(iasi::IASIInstrument)
 end
 
 """
+    _internal_grid(iasi, Δν_hi, with_ils) -> WavenumberGrid
+
+High-resolution internal monochromatic grid at spacing `Δν_hi`. When `with_ils`,
+the grid is padded by the ILS kernel half-width (`ILS_HALFWIDTH_CM`) on each side:
+`apply_ils`/`ILSConvolver` zero-pad beyond the grid, so without this margin every
+channel within the kernel half-width of `ν_min`/`ν_max` would roll off (the radiance
+collapses at the window edges). After convolution the spectrum is resampled back to
+`[ν_min, ν_max]`, discarding the rolled-off skirt. The pad is an integer number of
+`Δν_hi` steps, so the un-padded grid — and hence the IASI channel grid — stays an
+aligned subset. Used identically by `iasi_forward_model` and `analytic_jacobian` so
+their spectra agree to round-off.
+"""
+function _internal_grid(iasi::IASIInstrument, Δν_hi::Float64, with_ils::Bool)
+    if with_ils
+        pad = ceil(Int, ILS_HALFWIDTH_CM / Δν_hi) * Δν_hi
+        return wavenumber_grid(iasi.ν_min - pad, iasi.ν_max + pad, Δν_hi)
+    end
+    return wavenumber_grid(iasi.ν_min, iasi.ν_max, Δν_hi)
+end
+
+"""
     iasi_forward_model(prof, linelists;
                        iasi=IASIInstrument(),
                        geom=nadir_geometry(),
@@ -160,7 +181,7 @@ function iasi_forward_model(prof::AtmosphericProfile,
         4
     end
     Δν_hi = iasi.Δν / hrf
-    ν_grid_hi = wavenumber_grid(iasi.ν_min, iasi.ν_max, Δν_hi)
+    ν_grid_hi = _internal_grid(iasi, Δν_hi, with_ils)
 
     # ── 2. Compute layer properties ──────────────────────────────────────
     layers = layer_properties(prof; T_method=T_method)

@@ -187,7 +187,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
                 push!(cost_hist, J)
                 method === :gauss_newton || (γ = max(γ / γ_factor, γ_min))
                 accepted = true
-                verbose && println("  iter $iter: J=$(round(J,sigdigits=6)) d²=$(round(d2,sigdigits=3)) γ=$γ")
+                verbose && (println("  iter $iter: J=$(round(J,sigdigits=6)) d²=$(round(d2,sigdigits=3)) γ=$γ"); flush(stdout))
                 d2 < conv_factor * n && (converged = true)
                 break
             else
