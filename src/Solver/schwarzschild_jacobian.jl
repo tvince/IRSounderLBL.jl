@@ -155,5 +155,112 @@ function schwarzschild_rte_jacobian(ν_grid::WavenumberGrid,
         I[i] = I_i
     end
 
+    # Reflected downwelling (RFM Eq. 14 term 3) and its derivatives, mirroring
+    # `add_reflected_downwelling!` in schwarzschild.jl. Skipped for ε==1.
+    if ε_sfc < 1.0
+        add_reflected_downwelling_jacobian!(I, dI_dτ, dI_dTlev, dI_dε,
+                                            ν_grid, τ_layers, T_levels, 𝒯, μ,
+                                            ε_sfc, is_cim, T_ave, fracs)
+    end
+
     return I, dI_dτ, dI_dTlev, dI_dTsfc, dI_dε
+end
+
+"""
+    add_reflected_downwelling_jacobian!(I, dI_dτ, dI_dTlev, dI_dε, ν_grid,
+                                        τ_layers, T_levels, 𝒯, μ, ε_sfc,
+                                        is_cim, T_ave, fracs)
+
+Add the reflected-downwelling surface term `R = (1−ε)·I↓·𝒯₁` and its analytic
+derivatives in place. `I↓ = Σ_k g_k·em↓_k` is the atmosphere-emitted downwelling
+radiance at the surface, `g_k = Π_{j<k} e^{−a_j}` the level-k→surface
+transmittance, `𝒯₁` the total surface→TOA transmittance, and `em↓_k` the layer's
+**downward** emission (anchored at the lower boundary; see the forward helper).
+
+Derivatives (the surface term carries no T_sfc dependence, so `dI_dTsfc` is
+untouched):
+
+  - `∂R/∂ε       = −I↓·𝒯₁`
+  - `∂R/∂T_lev[·] = (1−ε)·𝒯₁·Σ_k g_k·∂em↓_k/∂T_lev[·]`
+  - `∂R/∂τ_m     = (1−ε)·(1/μ)·𝒯₁·(−I↓_above_m + g_m·∂em↓_m/∂a_m − I↓)`,
+    where `I↓_above_m = Σ_{k>m} g_k·em↓_k` (the part of `I↓` emitted above layer
+    m, which both layer m attenuates and 𝒯₁ re-attenuates).
+"""
+function add_reflected_downwelling_jacobian!(I::Vector{Float64},
+                                             dI_dτ::Matrix{Float64},
+                                             dI_dTlev::Matrix{Float64},
+                                             dI_dε::Vector{Float64},
+                                             ν_grid::WavenumberGrid,
+                                             τ_layers::AbstractMatrix{<:Real},
+                                             T_levels::AbstractVector{<:Real},
+                                             𝒯::AbstractMatrix{<:Real},
+                                             μ::Float64,
+                                             ε_sfc::Float64,
+                                             is_cim::Bool,
+                                             T_ave::AbstractVector{<:Real},
+                                             fracs::AbstractVector{<:Real})
+    n_ν, n_layers = size(τ_layers)
+    invμ = 1.0 / μ
+    refl = 1.0 - ε_sfc
+    g    = Vector{Float64}(undef, n_layers)   # transmittance level k → surface
+    em   = Vector{Float64}(undef, n_layers)   # downward emission of layer k
+    dem  = Vector{Float64}(undef, n_layers)   # ∂em↓_k/∂a_k
+
+    @inbounds for i in 1:n_ν
+        ν  = ν_grid.ν[i]
+        𝒯1 = 𝒯[i, 1]
+
+        # Forward downward sweep: g_k, em↓_k, dem↓_k, I↓, and T_lev derivatives.
+        gk     = 1.0
+        I_down = 0.0
+        for k in 1:n_layers
+            a = τ_layers[i, k] * invμ
+            w = exp(-a)
+            u = 1.0 - w
+            g[k] = gk
+
+            if is_cim
+                Bavg = planck_radiance(ν, T_ave[k])
+                Bbot = planck_radiance(ν, Float64(T_levels[k]))
+                f    = _cim_correction(a)
+                fp   = _cim_correction_deriv(a)
+                core   = Bavg + (Bbot - Bavg) * f
+                em[k]  = u * core
+                dem[k] = w * core + u * (Bbot - Bavg) * fp
+                # T_lev derivs: B_avg via T_ave (split k/k+1 by frac), B_bot at k.
+                cavg = refl * 𝒯1 * gk * u * (1.0 - f) * dB_dT(ν, T_ave[k])
+                fr   = fracs[k]
+                dI_dTlev[i, k]     += cavg * (1.0 - fr) +
+                                      refl * 𝒯1 * gk * u * f * dB_dT(ν, Float64(T_levels[k]))
+                dI_dTlev[i, k + 1] += cavg * fr
+            else
+                Bbot = planck_radiance(ν, Float64(T_levels[k]))
+                Btop = planck_radiance(ν, Float64(T_levels[k + 1]))
+                fl   = _lit_correction(a)
+                flp  = _lit_correction_deriv(a)
+                em[k]  = Bbot * u + (Btop - Bbot) * fl
+                dem[k] = Bbot * w + (Btop - Bbot) * flp
+                # em↓ = B_bot·(u−f) + B_top·f
+                dI_dTlev[i, k]     += refl * 𝒯1 * gk * (u - fl) * dB_dT(ν, Float64(T_levels[k]))
+                dI_dTlev[i, k + 1] += refl * 𝒯1 * gk * fl * dB_dT(ν, Float64(T_levels[k + 1]))
+            end
+
+            I_down += gk * em[k]
+            gk     *= w
+        end
+
+        # Apply R to I and dI_dε.
+        I[i]     += refl * I_down * 𝒯1
+        dI_dε[i] += -I_down * 𝒯1
+
+        # Backward sweep for τ derivatives, maintaining I↓_above_m.
+        I_down_above = 0.0
+        for m in n_layers:-1:1
+            a = τ_layers[i, m] * invμ
+            dI_dτ[i, m] += refl * invμ * 𝒯1 *
+                           (-I_down_above + g[m] * dem[m] - I_down)
+            I_down_above += g[m] * em[m]
+        end
+    end
+    return I
 end

@@ -192,6 +192,83 @@ function schwarzschild_rte(ν_grid::WavenumberGrid,
         end
     end
 
+    # Reflected downwelling (RFM Eq. 14 term 3): for a non-black surface the
+    # atmosphere-emitted downwelling radiance reaching the surface is specularly
+    # reflected with reflectivity (1−ε) and re-attenuated surface→TOA by 𝒯[1].
+    # Skipped for ε_sfc==1 (term vanishes) so the blackbody path is bit-for-bit
+    # unchanged. The cosmic-background boundary (RFM term 4, ∝ B(2.7 K)) is
+    # omitted: negligible in the IR, consistent with the upward sweep ignoring
+    # any space-incident radiance at TOA.
+    if ε_sfc < 1.0
+        add_reflected_downwelling!(I, ν_grid, τ_layers, T_levels, 𝒯, μ, ε_sfc,
+                                   source_function, T_ave)
+    end
+
+    return I
+end
+
+"""
+    add_reflected_downwelling!(I, ν_grid, τ_layers, T_levels, 𝒯, μ, ε_sfc,
+                               source_function, T_ave)
+
+Add the specularly-reflected downwelling surface term to the TOA radiance `I`
+in place. Sweeps top-of-atmosphere → surface accumulating the downwelling
+radiance `I_down` reaching the surface, then adds `(1−ε_sfc)·I_down·𝒯[:,1]`.
+
+The per-layer **downward** emission mirrors the upward form but anchored at the
+*lower* boundary (the face toward a surface observer):
+
+  - `:toon` `em↓_k = B_bot·(1−e^{−s}) + (B_top−B_bot)·f_lit(s)`
+  - `:cim`  `em↓_k = (1−e^{−s})·(B_avg + (B_bot−B_avg)·f_cim(s))`
+
+`g_k` is the transmittance from the bottom of layer k (level k) down to the
+surface, built as a running product `g_1 = 1`, `g_{k+1} = g_k·e^{−s_k}`.
+"""
+function add_reflected_downwelling!(I::Vector{Float64},
+                                    ν_grid::WavenumberGrid,
+                                    τ_layers::AbstractMatrix{<:Real},
+                                    T_levels::AbstractVector{<:Real},
+                                    𝒯::AbstractMatrix{<:Real},
+                                    μ::Float64,
+                                    ε_sfc::Float64,
+                                    source_function::Symbol,
+                                    T_ave::Union{AbstractVector{<:Real}, Nothing})
+    n_ν, n_layers = size(τ_layers)
+    I_down = zeros(Float64, n_ν)              # downwelling radiance at surface
+    g      = ones(Float64, n_ν)              # transmittance level k → surface
+
+    if source_function == :toon
+        @inbounds for k in 1:n_layers
+            T_bot = Float64(T_levels[k])
+            T_top = Float64(T_levels[k + 1])
+            @simd for i in 1:n_ν
+                B_bot = planck_radiance(ν_grid.ν[i], T_bot)
+                B_top = planck_radiance(ν_grid.ν[i], T_top)
+                s     = τ_layers[i, k] / μ
+                em    = B_bot * (1.0 - exp(-s)) + (B_top - B_bot) * _lit_correction(s)
+                I_down[i] += g[i] * em
+                g[i]      *= exp(-s)
+            end
+        end
+    else  # :cim
+        @inbounds for k in 1:n_layers
+            T_avg = Float64(T_ave[k])
+            T_bot = Float64(T_levels[k])
+            @simd for i in 1:n_ν
+                B_avg = planck_radiance(ν_grid.ν[i], T_avg)
+                B_bot = planck_radiance(ν_grid.ν[i], T_bot)
+                s     = τ_layers[i, k] / μ
+                em    = (1.0 - exp(-s)) * (B_avg + (B_bot - B_avg) * _cim_correction(s))
+                I_down[i] += g[i] * em
+                g[i]      *= exp(-s)
+            end
+        end
+    end
+
+    refl = 1.0 - ε_sfc
+    @inbounds @simd for i in 1:n_ν
+        I[i] += refl * I_down[i] * 𝒯[i, 1]
+    end
     return I
 end
 
