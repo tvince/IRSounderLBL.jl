@@ -29,7 +29,7 @@ smoothing `Sₛ = (I − A) Sₐ (I − A)ᵀ` (forward-model/interferent `S_f` 
 interferents' Jacobians and is left to a separate helper). See thesis §3.2, §3.4.
 """
 
-using LinearAlgebra: Symmetric, inv, tr, I, cholesky, issuccess, logabsdet
+using LinearAlgebra: Symmetric, Diagonal, inv, tr, I, cholesky, issuccess, logabsdet
 
 """
     RetrievalResult
@@ -140,6 +140,12 @@ function optimal_estimation(y::AbstractVector{<:Real},
     xa_v   = collect(Float64, xa)
     yv     = collect(Float64, y)
 
+    # Sₑ is constant across the whole retrieval, so factor it once and reuse. A
+    # `Diagonal` keeps its cheap O(n) solve; a dense (apodized/scene) Sₑ is solved
+    # via a single Cholesky instead of refactorizing on every `Se \ …` — the line
+    # search alone does up to `max_linesearch` solves per outer iteration.
+    Se_fac = Se isa Diagonal ? Se : cholesky(Symmetric(Matrix(Se)))
+
     # Surface emissivity: from the state when retrieved, else the fixed scene value
     # `ε_fixed` (`unpack_state`'s εs is the 1.0 fallback, used only when ε ∉ state).
     _ε(εs) = spec.include_emissivity ? εs : ε_fixed
@@ -159,7 +165,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
     x = collect(Float64, x0)
     F, K, νout = forward_jac(x)
     resid = yv .- F
-    Sei_r = Se \ resid
+    Sei_r = Se_fac \ resid
     dx_a  = x .- xa_v
     J = _oe_cost(resid, Sei_r, dx_a, Sa_inv * dx_a)
     cost_hist = Float64[J]
@@ -169,7 +175,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
     iter = 0
     while iter < max_iter
         iter += 1
-        SeiK    = Se \ K                       # Sₑ⁻¹ K   (n_y × n)
+        SeiK    = Se_fac \ K                    # Sₑ⁻¹ K   (n_y × n)
         KtSeiK  = Symmetric(K' * SeiK)         # KᵀSₑ⁻¹K  (n × n)
         g       = K' * Sei_r .- Sa_inv * (x .- xa_v)   # gradient term
 
@@ -180,7 +186,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
             x_try = x .+ Δx
             F_try = forward(x_try)
             r_try = yv .- F_try
-            Sei_rt = Se \ r_try
+            Sei_rt = Se_fac \ r_try
             dxa_t  = x_try .- xa_v
             J_try  = _oe_cost(r_try, Sei_rt, dxa_t, Sa_inv * dxa_t)
 
@@ -190,7 +196,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
                 x = x_try
                 F, K, νout = forward_jac(x)
                 resid = yv .- F
-                Sei_r = Se \ resid
+                Sei_r = Se_fac \ resid
                 J = J_try
                 push!(cost_hist, J)
                 method === :gauss_newton || (γ = max(γ / γ_factor, γ_min))
@@ -207,7 +213,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
     end
 
     # Diagnostics at the solution (Rodgers Ch. 2–3; thesis §3.2, §3.4).
-    SeiK   = Se \ K                              # Sₑ⁻¹K            (n_y × n)
+    SeiK   = Se_fac \ K                           # Sₑ⁻¹K            (n_y × n)
     KtSeiK = Symmetric(K' * SeiK)                # KᵀSₑ⁻¹K          (n × n)
     S_hat  = Matrix(inv(Symmetric(Sa_inv .+ KtSeiK)))
     G      = S_hat * SeiK'                        # gain Ŝ·KᵀSₑ⁻¹    (n × n_y)
@@ -222,7 +228,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
     S_noise     = Matrix(Symmetric(G * (Se * G')))
     ImA         = I - A
     S_smoothing = Matrix(Symmetric(ImA * (Sa * ImA')))
-    chi2   = resid' * (Se \ resid)
+    chi2   = resid' * (Se_fac \ resid)
 
     return RetrievalResult(x, spec, converged, iter, cost_hist,
                            S_hat, A, G, dof, dfn, H, S_noise, S_smoothing,
