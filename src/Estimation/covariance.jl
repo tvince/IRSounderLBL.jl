@@ -78,3 +78,53 @@ function apodized_measurement_covariance(ν::AbstractVector{<:Real},
     end
     return Symmetric(Se)
 end
+
+"""
+    scene_nedt(ν, Tb_scene; nedt_280K=0.25, T_ref=280.0) -> Vector{Float64}
+
+Scene-specific noise-equivalent differential temperature NEΔTₛ per channel, in
+brightness-temperature units (K), via Vincent thesis Eq. (2.3):
+
+    NEΔTₛ(ν) = (∂B/∂T)|_T_ref · (∂Tb/∂L)|_scene · NEΔT_ref
+             = NEΔT_ref · dB_dT(ν, T_ref) / dB_dT(ν, Tb_scene(ν)),
+
+since ∂Tb/∂L = 1/(∂B/∂T)|_scene. Working in BT (not radiance) makes the noise
+scene-dependent: the reported `NEΔT_ref` (instrument noise about a `T_ref`=280 K
+blackbody, IASI ≈ 0.2–0.35 K) is only ~accurate above ~1300 cm⁻¹; below that
+(e.g. the CO₂ ν₂ band) the cold, opaque channels are genuinely noisier in BT and
+this conversion captures it. The Planck-radiance units cancel in the ratio.
+
+# Arguments
+- `ν`         : channel wavenumbers (cm⁻¹).
+- `Tb_scene`  : per-channel scene brightness temperature (K) — pass the observed
+                (or modelled) BT spectrum `y`.
+- `nedt_280K` : reported NEΔT at `T_ref` — scalar or per-channel vector (K).
+- `T_ref`     : reference blackbody temperature the NEΔT is quoted at (K).
+
+Pass the result as the `σ` vector to [`apodized_measurement_covariance`].
+"""
+function scene_nedt(ν::AbstractVector{<:Real}, Tb_scene::AbstractVector{<:Real};
+                    nedt_280K::Union{Real, AbstractVector{<:Real}} = 0.25,
+                    T_ref::Real = 280.0)::Vector{Float64}
+    n = length(ν)
+    length(Tb_scene) == n || error("Tb_scene must match length(ν)=$n; got $(length(Tb_scene))")
+    n0 = nedt_280K isa Real ? fill(Float64(nedt_280K), n) : collect(Float64, nedt_280K)
+    length(n0) == n || error("nedt_280K must be scalar or length(ν)=$n; got $(length(n0))")
+    Tref = Float64(T_ref)
+    return [n0[i] * dB_dT(Float64(ν[i]), Tref) / dB_dT(Float64(ν[i]), Float64(Tb_scene[i]))
+            for i in 1:n]
+end
+
+"""
+    scene_measurement_covariance(ν, Tb_scene; nedt_280K=0.25, T_ref=280.0, kwargs...)
+
+Convenience wrapper: scene-specific Sₑ with the Eq. (2.3) diagonal ([`scene_nedt`])
+and the apodization off-diagonals ([`apodized_measurement_covariance`], thesis
+§3.6). `kwargs` (`Δν_sample`, `fwhm_gauss`, `max_lag`) pass through to the latter.
+"""
+function scene_measurement_covariance(ν::AbstractVector{<:Real}, Tb_scene::AbstractVector{<:Real};
+                                      nedt_280K::Union{Real, AbstractVector{<:Real}} = 0.25,
+                                      T_ref::Real = 280.0, kwargs...)
+    σ = scene_nedt(ν, Tb_scene; nedt_280K = nedt_280K, T_ref = T_ref)
+    return apodized_measurement_covariance(ν, σ; kwargs...)
+end

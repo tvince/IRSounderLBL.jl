@@ -104,7 +104,7 @@ export StateVectorSpec, pack_state, unpack_state, state_labels
 export Jacobian, finite_difference_jacobian, default_fd_steps, column
 export analytic_jacobian
 export optimal_estimation, RetrievalResult
-export apodized_measurement_covariance
+export apodized_measurement_covariance, scene_nedt, scene_measurement_covariance
 export build_sa
 export dB_dT
 

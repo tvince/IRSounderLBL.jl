@@ -1355,6 +1355,26 @@ using LinearAlgebra
         @test Sd[1,2] == 0.0 && all(d -> isapprox(d, 0.04), diag(Sd))
     end
 
+    # ── Scene-specific NEΔT (thesis Eq. 2.3) ──────────────────────────────
+    @testset "Scene NEΔT — Eq. 2.3" begin
+        # at the reference temperature the conversion is the identity
+        @test isapprox(scene_nedt([720.0], [280.0]; nedt_280K=0.25)[1], 0.25; atol=1e-12)
+        # cold scene ⇒ larger BT noise; warm ⇒ smaller; strictly monotone in Tb
+        Tb = [215.0, 240.0, 270.0, 295.0]
+        σ  = scene_nedt(fill(720.0, 4), Tb; nedt_280K=0.25)
+        @test issorted(σ; rev=true)                       # colder → noisier
+        @test σ[1] > 0.4 && σ[end] < 0.25                 # ~0.47 K cold, < ref warm
+        # explicit ratio form: NEΔTₛ = NEΔT_ref · dB_dT(ν,Tref)/dB_dT(ν,Tb)
+        ν0 = 700.0; Tb0 = 230.0
+        @test isapprox(scene_nedt([ν0],[Tb0]; nedt_280K=0.3)[1],
+                       0.3*dB_dT(ν0,280.0)/dB_dT(ν0,Tb0); rtol=1e-12)
+        # per-channel NEΔT_ref vector + vector-driven convenience covariance
+        νv = collect(660.0:0.25:661.0); Tbv = fill(230.0, length(νv))
+        Se = scene_measurement_covariance(νv, Tbv; nedt_280K=0.25)
+        @test issymmetric(Se) && isposdef(Se)
+        @test isapprox(sqrt(Se[1,1]), scene_nedt(νv, Tbv; nedt_280K=0.25)[1]; rtol=1e-12)
+    end
+
     @testset "A-priori covariance — build_sa (vertical correlation)" begin
         nlev = 8
         p = collect(range(1000.0, 100.0; length=nlev))
