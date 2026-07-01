@@ -28,8 +28,15 @@ const ε_SEA   = 0.98
 # always write). Env var, not a positional ARG, to leave `[ν_lo ν_hi] [granule]`.
 const SAVE_JLD2 = get(ENV, "SAVE_JLD2", "1") != "0"
 
+# Timestamped progress print that flushes immediately — Julia block-buffers stdout
+# to a file/pipe, so without the flush a tailed background log shows nothing until
+# the run ends. `optimal_estimation(verbose=true)` streams per-iteration J/d²/γ
+# through the same flushed path.
+const T0 = time()
+prog(msg) = (@printf("[%7.1fs] %s\n", time() - T0, msg); flush(stdout))
+
 # ── 1. Read granule, screen for a clear, glint-free, near-nadir FOV ─────────────
-println("Reading $(basename(GRANULE)) over $(ν_LO)–$(ν_HI) cm⁻¹ …")
+prog("Reading $(basename(GRANULE)) over $(ν_LO)–$(ν_HI) cm⁻¹ …")
 g = read_iasi_l1c(GRANULE; bright=true, wnolim=(ν_LO, ν_HI),
                   cldlim=(0.0, 5.0), sralim=(15.0, 180.0), zenlim=(0.0, 25.0), max_fov=400)
 nfov(g) > 0 || error("no FOV passed clear/glint/zenith screening")
@@ -38,6 +45,7 @@ ifov = argmin(cloud_fraction(g))
 @printf("  %d FOVs; using #%d lat=%.2f lon=%.2f zen=%.1f° cld=%.1f%%;  BT %.1f…%.1f K (%d ch)\n",
         nfov(g), ifov, g.lat[ifov], g.lon[ifov], g.zen[ifov], cloud_fraction(g)[ifov],
         minimum(y), maximum(y), length(y))
+flush(stdout)
 
 # ── 2. Base atmosphere ──────────────────────────────────────────────────────────
 base = afgl_us_standard_50lev()
@@ -45,6 +53,7 @@ base.vmr[CO2] .*= (CO2_PPM * 1e-6) / base.vmr[CO2][1]
 nlev = n_levels(base)
 
 # ── 3. Forward-model context ────────────────────────────────────────────────────
+prog("Loading CO₂/H₂O linelists (iso 1–3, $(ν_LO-25)–$(ν_HI+25) cm⁻¹) …")
 co2 = load_linelist("data/co2_645_2760", 1:3; ν_min=ν_LO-25, ν_max=ν_HI+25)
 h2o = load_linelist("data/h2o_645_2760", 1:3; ν_min=ν_LO-25, ν_max=ν_HI+25)
 linelists = Dict(CO2 => co2, H2O => h2o)
@@ -68,11 +77,15 @@ Se = scene_measurement_covariance(νobs, y; nedt_280K=NEDT_280, T_ref=280.0)
 @printf("  Sₑ: scene NEΔT (Eq 2.3, NEΔT₂₈₀=%.2f K) → σ_BT %.2f…%.2f K  (median %.2f) across band\n",
         NEDT_280, minimum(σ_scene), maximum(σ_scene),
         sort(σ_scene)[cld(length(σ_scene),2)])
+flush(stdout)
 
 # ── 5. Retrieve ─────────────────────────────────────────────────────────────────
-println("Running optimal estimation (profile) …")
+prog("Running optimal estimation (profile, n=$(spec.n) state, $(length(y)) ch) …")
+prog("  (the first Jacobian is the heaviest step — expect a quiet minutes-long " *
+     "pause before 'iter 1'; per-iteration J/d²/γ stream below as they land)")
 @time r = optimal_estimation(y, spec, base, linelists;
                              xa=xa, Sa=Sa, Se=Se, ε_fixed=ε_SEA, fm_kwargs=fm, verbose=true)
+prog("optimal estimation returned (converged=$(r.converged), $(r.n_iter) iters)")
 
 # ── 6. Report ───────────────────────────────────────────────────────────────────
 @printf("\nconverged=%s iters=%d  χ²=%.1f (n_y=%d)  DOF=%.2f  H=%.2f bits\n",
