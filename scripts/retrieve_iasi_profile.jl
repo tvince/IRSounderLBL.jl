@@ -15,6 +15,7 @@
 using IRSounderLBL
 using LinearAlgebra: diag
 using Printf
+using JLD2: jldsave
 
 const ν_LO  = length(ARGS) >= 2 ? parse(Float64, ARGS[1]) : 645.0
 const ν_HI  = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 800.0
@@ -22,6 +23,10 @@ const GRANULE = length(ARGS) >= 3 ? ARGS[3] :
     "data/iasi_l1c/IASI_xxx_1C_M03_20260609152958Z_20260609153253Z_N_O_20260609165144Z__20260609165227"
 const CO2_PPM = 432.0
 const ε_SEA   = 0.98
+# Full RetrievalResult+K/Se/Sa dump (for channel-selection/DFS reuse). On by
+# default; `SAVE_JLD2=0 julia … retrieve_iasi_profile.jl` skips it (the CSVs
+# always write). Env var, not a positional ARG, to leave `[ν_lo ν_hi] [granule]`.
+const SAVE_JLD2 = get(ENV, "SAVE_JLD2", "1") != "0"
 
 # ── 1. Read granule, screen for a clear, glint-free, near-nadir FOV ─────────────
 println("Reading $(basename(GRANULE)) over $(ν_LO)–$(ν_HI) cm⁻¹ …")
@@ -103,3 +108,16 @@ open("data/iasi_profile_retrieval_fit.csv", "w") do io
     end
 end
 println("\nwrote data/iasi_profile_retrieval_{Tp,fit}.csv")
+
+# Full retrieval object for later analysis without re-running the (minutes-long)
+# forward model: `result` carries the Jacobian K at the solution plus A/G/Ŝ/DOF/H;
+# Se/Sa/xa let the linear diagnostics be regenerated (or extended to channel
+# selection / DFS studies, backlog #5/#6) under different assumptions. Opt out
+# with SAVE_JLD2=0.
+if SAVE_JLD2
+    jldsave("data/iasi_profile_retrieval.jld2"; result=r, K=r.K, Se=Se, Sa=Sa,
+            xa=xa, ν=νobs, y=y)
+    println("wrote data/iasi_profile_retrieval.jld2 (RetrievalResult + K, Se, Sa, xa, ν, y)")
+else
+    println("SAVE_JLD2=0 → skipped data/iasi_profile_retrieval.jld2")
+end

@@ -43,6 +43,8 @@ Rodgers diagnostics at the solution (thesis §3.2, §3.4):
 - `S_hat` — posterior covariance `Ŝ = (Sₐ⁻¹ + KᵀSₑ⁻¹K)⁻¹`
 - `A`     — averaging kernel `A = G·K = ∂x̂/∂x`
 - `G`     — gain matrix `G = Ŝ·KᵀSₑ⁻¹` (state × channel)
+- `K`     — Jacobian `∂y/∂x` at the solution (channel × state); the primitive from
+  which `A`/`G`/`Ŝ` and channel-selection/DFS studies derive (pair with `Sₑ`,`Sₐ`)
 - `dof`   — degrees of freedom for signal `tr(A)`
 - `dfn`   — degrees of freedom for noise `m − dof`
 - `H`     — Shannon information content `−½ log₂|I − A|` (bits)
@@ -58,6 +60,7 @@ struct RetrievalResult
     S_hat::Matrix{Float64}
     A::Matrix{Float64}
     G::Matrix{Float64}
+    K::Matrix{Float64}
     dof::Float64
     dfn::Float64
     H::Float64
@@ -231,6 +234,6 @@ function optimal_estimation(y::AbstractVector{<:Real},
     chi2   = resid' * (Se_fac \ resid)
 
     return RetrievalResult(x, spec, converged, iter, cost_hist,
-                           S_hat, A, G, dof, dfn, H, S_noise, S_smoothing,
+                           S_hat, A, G, K, dof, dfn, H, S_noise, S_smoothing,
                            chi2, F, νout)
 end
