@@ -256,11 +256,14 @@ const _LM_GRAD_DT = 0.02      # K, central-FD step for ∂Δσ/∂T
 const _LM_GRAD_DP_REL = 1e-4  # relative central-FD step for ∂Δσ/∂p_atm
 
 # nothing / non-LM model → the analytic Voigt grad (exact, one Faddeeva pass).
+# `need_p` is accepted (and ignored) for call-site parity: the analytic dp is a
+# free byproduct of the single Faddeeva pass.
 function _species_cross_section_grad(::Nothing, sp::GasSpecies,
                                      ν_grid::WavenumberGrid, ll::HITRANLinelist,
                                      T::Float64, p_atm::Float64;
                                      vmr_self::Float64 = 0.0, cutoff::Float64 = 25.0,
-                                     x_far::Float64 = _X_FAR, backend = nothing)
+                                     x_far::Float64 = _X_FAR, backend = nothing,
+                                     need_p::Bool = true)
     compute_voigt_cross_sections_grad(ν_grid, ll, T, p_atm;
                                       vmr_self=vmr_self, cutoff=cutoff, x_far=x_far)
 end
@@ -269,7 +272,8 @@ function _species_cross_section_grad(lm::AbstractLineMixing, sp::GasSpecies,
                                      ν_grid::WavenumberGrid, ll::HITRANLinelist,
                                      T::Float64, p_atm::Float64;
                                      vmr_self::Float64 = 0.0, cutoff::Float64 = 25.0,
-                                     x_far::Float64 = _X_FAR, backend = nothing)
+                                     x_far::Float64 = _X_FAR, backend = nothing,
+                                     need_p::Bool = true)
     # Species not handled by this LM model fall through to the analytic Voigt grad.
     sp == lm.data.species || return compute_voigt_cross_sections_grad(ν_grid, ll, T, p_atm;
                                           vmr_self=vmr_self, cutoff=cutoff, x_far=x_far)
@@ -278,19 +282,30 @@ function _species_cross_section_grad(lm::AbstractLineMixing, sp::GasSpecies,
                                           vmr_self=vmr_self, cutoff=cutoff, x_far=x_far)
 
     # LM perturbation at the centre and its central-FD derivatives in (T, p).
-    Δσ0 = _lm_perturbation(lm, ν_grid, T, p_atm; cutoff=cutoff)
+    # The centre and both ∂p calls share T, so the O(n²)-per-band Y(T) / W(T)
+    # build is done ONCE and reused (lever 3); only the two ∂T calls rebuild.
+    cache = _lm_T_cache(lm, T)
+    Δσ0 = _lm_perturbation(lm, ν_grid, T, p_atm; cutoff=cutoff, cache=cache)
     hT  = _LM_GRAD_DT
     dΔT = (_lm_perturbation(lm, ν_grid, T + hT, p_atm; cutoff=cutoff) .-
            _lm_perturbation(lm, ν_grid, T - hT, p_atm; cutoff=cutoff)) ./ (2hT)
-    hp  = max(p_atm, 1e-6) * _LM_GRAD_DP_REL
-    dΔp = (_lm_perturbation(lm, ν_grid, T, p_atm + hp; cutoff=cutoff) .-
-           _lm_perturbation(lm, ν_grid, T, p_atm - hp; cutoff=cutoff)) ./ (2hp)
+    # `need_p=false` (state has no pressure/VMR component consuming ∂σ/∂p —
+    # `analytic_jacobian` reads `gr.dp` only when coupling a retrieved VMR):
+    # skip the two ∂p perturbation calls; the returned `dp` is then the Voigt
+    # baseline's analytic ∂σ/∂p WITHOUT the LM term and must not be consumed.
+    dΔp = if need_p
+        hp = max(p_atm, 1e-6) * _LM_GRAD_DP_REL
+        (_lm_perturbation(lm, ν_grid, T, p_atm + hp; cutoff=cutoff, cache=cache) .-
+         _lm_perturbation(lm, ν_grid, T, p_atm - hp; cutoff=cutoff, cache=cache)) ./ (2hp)
+    else
+        nothing
+    end
 
     # Total cross section with the forward's max(σ_voigt + Δσ, 0) clamp; the
     # derivatives are the summed sensitivities, zeroed wherever the total is clamped.
     σ  = g.σ .+ Δσ0
     dT = g.dT .+ dΔT
-    dp = g.dp .+ dΔp
+    dp = dΔp === nothing ? copy(g.dp) : g.dp .+ dΔp
     @inbounds for i in eachindex(σ)
         if σ[i] <= 0.0
             σ[i] = 0.0; dT[i] = 0.0; dp[i] = 0.0

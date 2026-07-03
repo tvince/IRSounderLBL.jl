@@ -248,9 +248,12 @@ function analytic_jacobian(prof::AtmosphericProfile,
                 # LM-aware grad: plain Voigt (analytic) for non-LM species/models, and
                 # Voigt baseline + central-FD'd LM perturbation when `line_mixing`
                 # handles this species (roadmap §6.4). σ matches the forward exactly.
+                # need_p: gr.dp is consumed only in the coupling block below, so
+                # for e.g. a T(p)+T_sfc state the LM grad skips its 2 ∂p FD calls.
                 gr = _species_cross_section_grad(line_mixing, sp, ν_grid_hi, ll,
                                                  T_cg_sp, p_cg_atm;
-                                                 vmr_self=vmr_self, cutoff=cutoff, backend=backend)
+                                                 vmr_self=vmr_self, cutoff=cutoff, backend=backend,
+                                                 need_p=(do_coupling && is_retr))
                 σ_sp = gr.σ
                 if need_T
                     dτdTcg[sp][:, k] .= gr.dT .* coef
