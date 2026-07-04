@@ -192,6 +192,16 @@ function VPWLineMixing(data::HITRANRelmatData;
     return VPWLineMixing(data, wl, min_band_strength)
 end
 
+# Isotopologues present in a linelist, normalized to the relmat convention. HITRAN
+# codes the 10th isotopologue as the character '0' (parsed here into `iso_id == 0`),
+# whereas the relaxation matrix stores it as `10`; map 0→10 so the two agree.
+# Used to restrict the LM path to isotopes that actually have a Voigt baseline in the
+# linelist (Fix A): the relmat carries bands (e.g. CO2 iso-4) whose lines may be
+# absent from the loaded `.par` set, and applying their line-mixing *redistribution*
+# without an isotope *baseline* to redistribute is physically inconsistent.
+_linelist_isotopes(ll::HITRANLinelist) =
+    Set{Int}(Int(l.iso_id) == 0 ? 10 : Int(l.iso_id) for l in ll.lines)
+
 # Per-species cross-section dispatch used by `iasi_forward_model`.
 # `nothing` and any non-CO2 species fall through to the plain Voigt path.
 # `VPYLineMixing` + CO2 routes through the Voigt+dispersive wrapper.
@@ -215,7 +225,8 @@ function _species_cross_section(lm::VPYLineMixing, sp::GasSpecies, ν_grid, ll, 
     sp == lm.data.species || return compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                                       vmr_self=vmr_self, cutoff=cutoff, backend=backend)
     compute_voigt_lm_cross_sections(ν_grid, ll, lm.data, T, p_atm; cutoff=cutoff,
-                                     lm_cutoff=lm_cutoff, min_band_strength=lm.min_band_strength)
+                                     lm_cutoff=lm_cutoff, min_band_strength=lm.min_band_strength,
+                                     isotopes=_linelist_isotopes(ll))
 end
 
 function _species_cross_section(lm::VPWLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
@@ -225,7 +236,8 @@ function _species_cross_section(lm::VPWLineMixing, sp::GasSpecies, ν_grid, ll, 
                                                       vmr_self=vmr_self, cutoff=cutoff, backend=backend)
     compute_voigt_vpw_cross_sections(ν_grid, ll, lm.data, T, p_atm;
                                        whitelist=lm.whitelist, cutoff=cutoff,
-                                       lm_cutoff=lm_cutoff, min_band_strength=lm.min_band_strength)
+                                       lm_cutoff=lm_cutoff, min_band_strength=lm.min_band_strength,
+                                       isotopes=_linelist_isotopes(ll))
 end
 
 # ── LM-only perturbation accessor (for the Jacobian ∂σ/∂{T,p}, roadmap §6.4) ──
@@ -269,17 +281,21 @@ function _lm_T_cache(lm::VPWLineMixing, T::Float64)
 end
 
 function _lm_perturbation(lm::VPYLineMixing, ν_grid, T, p_atm; cutoff,
+                          isotopes::Union{Nothing, Set{Int}} = nothing,
                           cache::Union{Nothing, LMTCache} = nothing)
     @assert cache === nothing || cache.T == T "LMTCache built at a different T"
     compute_lm_dispersive_correction(ν_grid, lm.data, T, p_atm;
                                      cutoff=cutoff, min_band_strength=lm.min_band_strength,
+                                     isotopes=isotopes,
                                      Ys = cache === nothing ? nothing : cache.Ys)
 end
 function _lm_perturbation(lm::VPWLineMixing, ν_grid, T, p_atm; cutoff,
+                          isotopes::Union{Nothing, Set{Int}} = nothing,
                           cache::Union{Nothing, LMTCache} = nothing)
     @assert cache === nothing || cache.T == T "LMTCache built at a different T"
     _vpw_perturbation(ν_grid, lm.data, T, p_atm; whitelist=lm.whitelist,
                       cutoff=cutoff, min_band_strength=lm.min_band_strength,
+                      isotopes=isotopes,
                       Ys = cache === nothing ? nothing : cache.Ys,
                       Wρs = cache === nothing ? nothing : cache.Wρ)
 end
@@ -1083,11 +1099,12 @@ function compute_voigt_vpw_cross_sections(ν_grid::WavenumberGrid,
                                             lm_cutoff::Float64 = cutoff,
                                             keep_threshold::Float64 = 1e-4,
                                             min_band_strength::Float64 = 0.0,
+                                            isotopes::Union{Nothing, Set{Int}} = nothing,
                                             x_far::Float64 = _X_FAR)::Vector{Float64}
     σ_voigt = compute_voigt_cross_sections(ν_grid, ll_co2, T, p_atm; cutoff=cutoff)
     Δσ = _vpw_perturbation(ν_grid, relmat, T, p_atm; whitelist=whitelist, cutoff=lm_cutoff,
                            keep_threshold=keep_threshold, min_band_strength=min_band_strength,
-                           x_far=x_far)
+                           isotopes=isotopes, x_far=x_far)
     return max.(σ_voigt .+ Δσ, 0.0)
 end
 
@@ -1107,17 +1124,20 @@ function _vpw_perturbation(ν_grid::WavenumberGrid, relmat::HITRANRelmatData,
                            keep_threshold::Float64 = 1e-4,
                            min_band_strength::Float64 = 0.0,
                            x_far::Float64 = _X_FAR,
+                           isotopes::Union{Nothing, Set{Int}} = nothing,
                            Ys = nothing,
                            Wρs::Union{Nothing, Dict{Int, Tuple{Matrix{Float64}, Vector{Float64}}}} = nothing)::Vector{Float64}
     # Non-whitelisted bands: one flat dispersive launch over all of them.
     Δσ = compute_lm_dispersive_correction(ν_grid, relmat, T, p_atm;
                                           cutoff=cutoff, x_far=x_far,
                                           min_band_strength=min_band_strength,
-                                          skip=whitelist, Ys=Ys)
+                                          skip=whitelist, isotopes=isotopes, Ys=Ys)
     # Whitelisted bands: eigendecomposed per-band perturbation (a handful).
     for (bi, band) in enumerate(relmat.bands)
         band.name in whitelist || continue
         Int(band.li) > 8 && continue
+        # Fix A: skip bands whose isotopologue has no Voigt baseline in the linelist.
+        isotopes !== nothing && Int(band.isot) ∉ isotopes && continue
         # #4 cutoff: skip bands whose abundance-weighted intensity is below threshold.
         min_band_strength > 0.0 && _band_eff_strength(band) < min_band_strength && continue
         lli = Int8(min(band.li, band.lf))
@@ -1288,10 +1308,13 @@ function compute_lm_dispersive_correction(ν_grid::WavenumberGrid,
                                            min_band_strength::Float64 = 0.0,
                                            x_far::Float64 = _X_FAR,
                                            skip::Union{Nothing, Set{String}} = nothing,
+                                           isotopes::Union{Nothing, Set{Int}} = nothing,
                                            Ys = nothing)::Vector{Float64}
     ν0s = Float64[]; fs = Float64[]; ys = Float64[]; YSns = Float64[]
     for (bi, band) in enumerate(relmat.bands)
         Int(band.li) > 8 && continue
+        # Fix A: skip bands whose isotopologue has no Voigt baseline in the linelist.
+        isotopes !== nothing && Int(band.isot) ∉ isotopes && continue
         # #4 cutoff: skip bands whose abundance-weighted intensity is below threshold.
         min_band_strength > 0.0 && _band_eff_strength(band) < min_band_strength && continue
         lli = Int8(min(band.li, band.lf))
@@ -1334,11 +1357,13 @@ function compute_voigt_lm_cross_sections(ν_grid::WavenumberGrid,
                                           lm_cutoff::Float64 = cutoff,
                                           method::VoigtMethod = FullFaddeeva,
                                           min_band_strength::Float64 = 0.0,
+                                          isotopes::Union{Nothing, Set{Int}} = nothing,
                                           x_far::Float64 = _X_FAR)::Vector{Float64}
     σ_voigt = compute_voigt_cross_sections(ν_grid, ll_co2, T, p_atm;
                                             cutoff=cutoff, method=method, x_far=x_far)
     σ_disp  = compute_lm_dispersive_correction(ν_grid, relmat, T, p_atm;
                                                 cutoff=lm_cutoff, x_far=x_far,
-                                                min_band_strength=min_band_strength)
+                                                min_band_strength=min_band_strength,
+                                                isotopes=isotopes)
     return max.(σ_voigt .+ σ_disp, 0.0)
 end

@@ -286,19 +286,21 @@ function _species_cross_section_grad(lm::AbstractLineMixing, sp::GasSpecies,
     # LM perturbation at the centre and its central-FD derivatives in (T, p).
     # The centre and both ∂p calls share T, so the O(n²)-per-band Y(T) / W(T)
     # build is done ONCE and reused (lever 3); only the two ∂T calls rebuild.
+    # Fix A: restrict the LM path to isotopologues present in the Voigt baseline.
+    isotopes = _linelist_isotopes(ll)
     cache = _lm_T_cache(lm, T)
-    Δσ0 = _lm_perturbation(lm, ν_grid, T, p_atm; cutoff=lm_cutoff, cache=cache)
+    Δσ0 = _lm_perturbation(lm, ν_grid, T, p_atm; cutoff=lm_cutoff, isotopes=isotopes, cache=cache)
     hT  = _LM_GRAD_DT
-    dΔT = (_lm_perturbation(lm, ν_grid, T + hT, p_atm; cutoff=lm_cutoff) .-
-           _lm_perturbation(lm, ν_grid, T - hT, p_atm; cutoff=lm_cutoff)) ./ (2hT)
+    dΔT = (_lm_perturbation(lm, ν_grid, T + hT, p_atm; cutoff=lm_cutoff, isotopes=isotopes) .-
+           _lm_perturbation(lm, ν_grid, T - hT, p_atm; cutoff=lm_cutoff, isotopes=isotopes)) ./ (2hT)
     # `need_p=false` (state has no pressure/VMR component consuming ∂σ/∂p —
     # `analytic_jacobian` reads `gr.dp` only when coupling a retrieved VMR):
     # skip the two ∂p perturbation calls; the returned `dp` is then the Voigt
     # baseline's analytic ∂σ/∂p WITHOUT the LM term and must not be consumed.
     dΔp = if need_p
         hp = max(p_atm, 1e-6) * _LM_GRAD_DP_REL
-        (_lm_perturbation(lm, ν_grid, T, p_atm + hp; cutoff=lm_cutoff, cache=cache) .-
-         _lm_perturbation(lm, ν_grid, T, p_atm - hp; cutoff=lm_cutoff, cache=cache)) ./ (2hp)
+        (_lm_perturbation(lm, ν_grid, T, p_atm + hp; cutoff=lm_cutoff, isotopes=isotopes, cache=cache) .-
+         _lm_perturbation(lm, ν_grid, T, p_atm - hp; cutoff=lm_cutoff, isotopes=isotopes, cache=cache)) ./ (2hp)
     else
         nothing
     end
