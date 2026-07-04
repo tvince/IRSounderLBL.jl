@@ -262,6 +262,7 @@ function _species_cross_section_grad(::Nothing, sp::GasSpecies,
                                      ν_grid::WavenumberGrid, ll::HITRANLinelist,
                                      T::Float64, p_atm::Float64;
                                      vmr_self::Float64 = 0.0, cutoff::Float64 = 25.0,
+                                     lm_cutoff::Float64 = cutoff,
                                      x_far::Float64 = _X_FAR, backend = nothing,
                                      need_p::Bool = true)
     compute_voigt_cross_sections_grad(ν_grid, ll, T, p_atm;
@@ -272,6 +273,7 @@ function _species_cross_section_grad(lm::AbstractLineMixing, sp::GasSpecies,
                                      ν_grid::WavenumberGrid, ll::HITRANLinelist,
                                      T::Float64, p_atm::Float64;
                                      vmr_self::Float64 = 0.0, cutoff::Float64 = 25.0,
+                                     lm_cutoff::Float64 = cutoff,
                                      x_far::Float64 = _X_FAR, backend = nothing,
                                      need_p::Bool = true)
     # Species not handled by this LM model fall through to the analytic Voigt grad.
@@ -285,18 +287,18 @@ function _species_cross_section_grad(lm::AbstractLineMixing, sp::GasSpecies,
     # The centre and both ∂p calls share T, so the O(n²)-per-band Y(T) / W(T)
     # build is done ONCE and reused (lever 3); only the two ∂T calls rebuild.
     cache = _lm_T_cache(lm, T)
-    Δσ0 = _lm_perturbation(lm, ν_grid, T, p_atm; cutoff=cutoff, cache=cache)
+    Δσ0 = _lm_perturbation(lm, ν_grid, T, p_atm; cutoff=lm_cutoff, cache=cache)
     hT  = _LM_GRAD_DT
-    dΔT = (_lm_perturbation(lm, ν_grid, T + hT, p_atm; cutoff=cutoff) .-
-           _lm_perturbation(lm, ν_grid, T - hT, p_atm; cutoff=cutoff)) ./ (2hT)
+    dΔT = (_lm_perturbation(lm, ν_grid, T + hT, p_atm; cutoff=lm_cutoff) .-
+           _lm_perturbation(lm, ν_grid, T - hT, p_atm; cutoff=lm_cutoff)) ./ (2hT)
     # `need_p=false` (state has no pressure/VMR component consuming ∂σ/∂p —
     # `analytic_jacobian` reads `gr.dp` only when coupling a retrieved VMR):
     # skip the two ∂p perturbation calls; the returned `dp` is then the Voigt
     # baseline's analytic ∂σ/∂p WITHOUT the LM term and must not be consumed.
     dΔp = if need_p
         hp = max(p_atm, 1e-6) * _LM_GRAD_DP_REL
-        (_lm_perturbation(lm, ν_grid, T, p_atm + hp; cutoff=cutoff, cache=cache) .-
-         _lm_perturbation(lm, ν_grid, T, p_atm - hp; cutoff=cutoff, cache=cache)) ./ (2hp)
+        (_lm_perturbation(lm, ν_grid, T, p_atm + hp; cutoff=lm_cutoff, cache=cache) .-
+         _lm_perturbation(lm, ν_grid, T, p_atm - hp; cutoff=lm_cutoff, cache=cache)) ./ (2hp)
     else
         nothing
     end

@@ -160,6 +160,7 @@ function analytic_jacobian(prof::AtmosphericProfile,
                            internal_dnu::Union{Float64, Nothing} = 0.001,
                            high_res_factor::Union{Int, Nothing}  = nothing,
                            cutoff::Float64       = 25.0,
+                           lm_cutoff::Float64    = cutoff,
                            apply_continuum::Bool = true,
                            continua              = (:h2o, :co2, :co2_cia, :n2, :o2),
                            with_ils::Bool        = true,
@@ -252,7 +253,8 @@ function analytic_jacobian(prof::AtmosphericProfile,
                 # for e.g. a T(p)+T_sfc state the LM grad skips its 2 ∂p FD calls.
                 gr = _species_cross_section_grad(line_mixing, sp, ν_grid_hi, ll,
                                                  T_cg_sp, p_cg_atm;
-                                                 vmr_self=vmr_self, cutoff=cutoff, backend=backend,
+                                                 vmr_self=vmr_self, cutoff=cutoff, lm_cutoff=lm_cutoff,
+                                                 backend=backend,
                                                  need_p=(do_coupling && is_retr))
                 σ_sp = gr.σ
                 if need_T
@@ -271,7 +273,8 @@ function analytic_jacobian(prof::AtmosphericProfile,
             else
                 σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll,
                                               T_cg_sp, p_cg_atm;
-                                              vmr_self=vmr_self, cutoff=cutoff, backend=backend)
+                                              vmr_self=vmr_self, cutoff=cutoff, lm_cutoff=lm_cutoff,
+                                              backend=backend)
             end
             contrib = σ_sp .* coef
             τ_layers[:, k] .+= contrib

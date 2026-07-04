@@ -196,32 +196,36 @@ end
 # `nothing` and any non-CO2 species fall through to the plain Voigt path.
 # `VPYLineMixing` + CO2 routes through the Voigt+dispersive wrapper.
 function _species_cross_section(::Nothing, sp::GasSpecies, ν_grid, ll, T, p_atm;
-                                 vmr_self::Float64, cutoff::Float64, backend)
+                                 vmr_self::Float64, cutoff::Float64, backend,
+                                 lm_cutoff::Float64 = cutoff)
     compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                   vmr_self=vmr_self, cutoff=cutoff, backend=backend)
 end
 
 function _species_cross_section(lm::AbstractLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
-                                 vmr_self::Float64, cutoff::Float64, backend)
+                                 vmr_self::Float64, cutoff::Float64, backend,
+                                 lm_cutoff::Float64 = cutoff)
     compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                   vmr_self=vmr_self, cutoff=cutoff, backend=backend)
 end
 
 function _species_cross_section(lm::VPYLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
-                                 vmr_self::Float64, cutoff::Float64, backend)
+                                 vmr_self::Float64, cutoff::Float64, backend,
+                                 lm_cutoff::Float64 = cutoff)
     sp == lm.data.species || return compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                                       vmr_self=vmr_self, cutoff=cutoff, backend=backend)
     compute_voigt_lm_cross_sections(ν_grid, ll, lm.data, T, p_atm; cutoff=cutoff,
-                                     min_band_strength=lm.min_band_strength)
+                                     lm_cutoff=lm_cutoff, min_band_strength=lm.min_band_strength)
 end
 
 function _species_cross_section(lm::VPWLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
-                                 vmr_self::Float64, cutoff::Float64, backend)
+                                 vmr_self::Float64, cutoff::Float64, backend,
+                                 lm_cutoff::Float64 = cutoff)
     sp == lm.data.species || return compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                                       vmr_self=vmr_self, cutoff=cutoff, backend=backend)
     compute_voigt_vpw_cross_sections(ν_grid, ll, lm.data, T, p_atm;
                                        whitelist=lm.whitelist, cutoff=cutoff,
-                                       min_band_strength=lm.min_band_strength)
+                                       lm_cutoff=lm_cutoff, min_band_strength=lm.min_band_strength)
 end
 
 # ── LM-only perturbation accessor (for the Jacobian ∂σ/∂{T,p}, roadmap §6.4) ──
@@ -1076,11 +1080,12 @@ function compute_voigt_vpw_cross_sections(ν_grid::WavenumberGrid,
                                             T::Float64, p_atm::Float64;
                                             whitelist::Set{String},
                                             cutoff::Float64 = 25.0,
+                                            lm_cutoff::Float64 = cutoff,
                                             keep_threshold::Float64 = 1e-4,
                                             min_band_strength::Float64 = 0.0,
                                             x_far::Float64 = _X_FAR)::Vector{Float64}
     σ_voigt = compute_voigt_cross_sections(ν_grid, ll_co2, T, p_atm; cutoff=cutoff)
-    Δσ = _vpw_perturbation(ν_grid, relmat, T, p_atm; whitelist=whitelist, cutoff=cutoff,
+    Δσ = _vpw_perturbation(ν_grid, relmat, T, p_atm; whitelist=whitelist, cutoff=lm_cutoff,
                            keep_threshold=keep_threshold, min_band_strength=min_band_strength,
                            x_far=x_far)
     return max.(σ_voigt .+ Δσ, 0.0)
@@ -1326,13 +1331,14 @@ function compute_voigt_lm_cross_sections(ν_grid::WavenumberGrid,
                                           T::Float64,
                                           p_atm::Float64;
                                           cutoff::Float64 = 25.0,
+                                          lm_cutoff::Float64 = cutoff,
                                           method::VoigtMethod = FullFaddeeva,
                                           min_band_strength::Float64 = 0.0,
                                           x_far::Float64 = _X_FAR)::Vector{Float64}
     σ_voigt = compute_voigt_cross_sections(ν_grid, ll_co2, T, p_atm;
                                             cutoff=cutoff, method=method, x_far=x_far)
     σ_disp  = compute_lm_dispersive_correction(ν_grid, relmat, T, p_atm;
-                                                cutoff=cutoff, x_far=x_far,
+                                                cutoff=lm_cutoff, x_far=x_far,
                                                 min_band_strength=min_band_strength)
     return max.(σ_voigt .+ σ_disp, 0.0)
 end

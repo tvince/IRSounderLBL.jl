@@ -156,6 +156,7 @@ function iasi_forward_model(prof::AtmosphericProfile,
                              internal_dnu::Union{Float64, Nothing} = 0.001,
                              high_res_factor::Union{Int, Nothing}   = nothing,
                              cutoff::Float64          = 25.0,
+                             lm_cutoff::Float64       = cutoff,
                              dptmn::Float64           = 1e-6,
                              apply_continuum::Bool    = true,
                              continua                 = (:h2o, :co2, :co2_cia, :n2, :o2),
@@ -214,7 +215,7 @@ function iasi_forward_model(prof::AtmosphericProfile,
             σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll_use,
                                            T_cg_sp, p_cg_atm;
                                            vmr_self=vmr_self,
-                                           cutoff=cutoff, backend=backend)
+                                           cutoff=cutoff, lm_cutoff=lm_cutoff, backend=backend)
             τ_layers[:, k] .+= σ_sp .* coef
         end
     end
