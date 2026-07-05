@@ -53,8 +53,11 @@ base.vmr[CO2] .*= (CO2_PPM * 1e-6) / base.vmr[CO2][1]
 nlev = n_levels(base)
 
 # ── 3. Forward-model context ────────────────────────────────────────────────────
-prog("Loading CO₂/H₂O linelists (iso 1–3, $(ν_LO-25)–$(ν_HI+25) cm⁻¹) …")
-co2 = load_linelist("data/co2_645_2760", 1:3; ν_min=ν_LO-25, ν_max=ν_HI+25)
+# CO₂ iso 1–4: iso-4 (627) supplies the ν₂ Q-branch bandhead near 665 cm⁻¹ that,
+# when missing, leaves a ~−8.7 K residual spike there (see scripts/retrieve_iasi_
+# profile_lm_iso4.jl). H₂O stays iso 1–3.
+prog("Loading CO₂ (iso 1–4) / H₂O (iso 1–3) linelists ($(ν_LO-25)–$(ν_HI+25) cm⁻¹) …")
+co2 = load_linelist("data/co2_645_2760", 1:4; ν_min=ν_LO-25, ν_max=ν_HI+25)
 h2o = load_linelist("data/h2o_645_2760", 1:3; ν_min=ν_LO-25, ν_max=ν_HI+25)
 linelists = Dict(CO2 => co2, H2O => h2o)
 nchan = round(Int, (ν_HI - ν_LO)/0.25) + 1

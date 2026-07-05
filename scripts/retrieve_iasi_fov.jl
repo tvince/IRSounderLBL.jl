@@ -46,7 +46,8 @@ nlev = n_levels(base)
         base.vmr[CO2][1]*1e6)
 
 # ── 3. Forward-model context (geometry, instrument, absorbers) ──────────────────
-co2 = load_linelist("data/co2_645_2760", 1:3; ν_min=ν_LO-25, ν_max=ν_HI+25)
+# CO₂ iso 1–4: iso-4 (627) supplies the ν₂ Q-branch bandhead near 665 cm⁻¹.
+co2 = load_linelist("data/co2_645_2760", 1:4; ν_min=ν_LO-25, ν_max=ν_HI+25)
 h2o = load_linelist("data/h2o_645_2760", 1:3; ν_min=ν_LO-25, ν_max=ν_HI+25)
 linelists = Dict(CO2 => co2, H2O => h2o)
 nchan = round(Int, (ν_HI - ν_LO)/0.25) + 1
