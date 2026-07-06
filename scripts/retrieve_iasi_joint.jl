@@ -27,6 +27,8 @@ using JLD2: jldsave, load
 const ν_LO, ν_HI = 645.0, 800.0
 const CO2_PPM, ε_SEA = 432.0, 0.98
 const LM_CUTOFF = 5.0
+const LM_METHOD = lowercase(get(ENV, "JOINT_LM", "vpy"))   # "vpy" (default) or "vpw"
+const TAG = LM_METHOD == "vpw" ? "_vpw" : ""
 const O3_SMIN   = 1e-23
 const TARGET_DFS = 1.0                     # ≈ one DOF per H2O bulk layer
 const BASELINE  = "data/iasi_profile_retrieval.jld2"
@@ -63,7 +65,8 @@ linelists = Dict(CO2 => co2, H2O => h2o, O3 => o3)
 
 prog("Loading HITRAN relaxation matrix (645–800) …")
 relmat = load_hitran_relmat("data/Line-mixing_HITRAN2020/data_new", ν_LO, ν_HI; stot_min=0.0)
-lm_vpy = VPYLineMixing(relmat)
+lm = LM_METHOD == "vpw" ? VPWLineMixing(relmat) : VPYLineMixing(relmat)
+@printf("  line mixing: %s\n", LM_METHOD == "vpw" ? "VP_W (full matrix)" : "VP_Y (first-order)"); flush(stdout)
 
 prog("Re-screening granule for exact FOV geometry …")
 g = read_iasi_l1c(GRANULE; bright=true, wnolim=(ν_LO, ν_HI),
@@ -77,7 +80,7 @@ nchan = round(Int, (ν_HI - ν_LO)/0.25) + 1
 iasi  = IASIInstrument(ν_LO, ν_HI, 0.25, nchan, 2.0, 0.5)
 geom  = ViewingGeometry(g.zen[ifov])
 fm = (iasi=iasi, geom=geom, with_ils=true, apodization=:gaussian,
-      apply_continuum=true, internal_dnu=0.0025, line_mixing=lm_vpy, lm_cutoff=LM_CUTOFF)
+      apply_continuum=true, internal_dnu=0.0025, line_mixing=lm, lm_cutoff=LM_CUTOFF)
 
 # ── Pilot: linear DFS estimate for H2O (one Jacobian at the prior, no iteration) ─────
 # Retrieve H2O at FULL resolution *only* to measure where the information is. The
@@ -141,10 +144,10 @@ end
 
 dPrior = report("PRIOR: VP_Y lm=5 + fixed O3, T-only", rPrior)
 
-prog("Final joint retrieval (T + H₂O bulk layers + O₃ column) …")
+prog("Final joint retrieval ($(uppercase(LM_METHOD)): T + H₂O bulk layers + O₃ column) …")
 @time rJ = optimal_estimation(y, spec, base, linelists;
                               xa=xa, Sa=Sa, Se=Se, ε_fixed=ε_SEA, fm_kwargs=fm, verbose=true)
-dJ = report("JOINT: T + H₂O($(length(blocks)) layers) + O₃ column", rJ)
+dJ = report("JOINT $(uppercase(LM_METHOD)): T + H₂O($(length(blocks)) layers) + O₃ column", rJ)
 
 # Retrieved reduced params: O3 column scale and per-layer H2O scales.
 o3_scale = exp(rJ.x[vmr_range(spec, O3)][1])
@@ -166,12 +169,12 @@ end
 
 # ── Dump ────────────────────────────────────────────────────────────────────────────
 nedt = sqrt.(diag(Se))
-open("data/iasi_joint_fit.csv", "w") do io
+open("data/iasi_joint$(TAG)_fit.csv", "w") do io
     println(io, "wavenumber_cm-1,bt_obs_K,res_prior_K,res_joint_K,nedt_K")
     for i in eachindex(νobs)
         @printf(io, "%.4f,%.4f,%.4f,%.4f,%.4f\n", νobs[i], y[i], dPrior.res[i], dJ.res[i], nedt[i])
     end
 end
-jldsave("data/iasi_joint.jld2"; rJ=rJ, ν=νobs, y=y, blocks=blocks,
+jldsave("data/iasi_joint$(TAG).jld2"; rJ=rJ, ν=νobs, y=y, blocks=blocks,
         dfs_h2o=dfs_h2o, o3_scale=o3_scale, h2o_scales=h2o_scales)
-prog("wrote data/iasi_joint_{fit.csv,jld2}")
+prog("wrote data/iasi_joint$(TAG)_{fit.csv,jld2}")
