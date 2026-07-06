@@ -101,7 +101,8 @@ export ComputeBackend, detect_backend
 
 # Estimation exports
 export StateVectorSpec, pack_state, unpack_state, state_labels
-export VMRParameterization, FullProfile, ColumnScale
+export VMRParameterization, FullProfile, ColumnScale, PartialColumns
+export partial_column_basis, dfs_partition, vmr_range
 export Jacobian, finite_difference_jacobian, default_fd_steps, column
 export analytic_jacobian
 export optimal_estimation, RetrievalResult

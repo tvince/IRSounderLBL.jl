@@ -1389,6 +1389,80 @@ using LinearAlgebra
         @test specM.vmr_ranges[1].second == 1:nlev && specM.vmr_ranges[2].second == (nlev+1):(nlev+1)
     end
 
+    # ── PartialColumns ("bulk layers") + dfs_partition ────────────────────────
+    @testset "PartialColumns reduced VMR parameterization" begin
+        iasi = IASIInstrument(699.0, 703.0, 0.5, 9, 2.0, 0.5)
+        nlev = 6
+        p = collect(range(1000.0, 200.0; length=nlev))
+        T = 288.0 .+ (225.0 - 288.0) .* (1000.0 .- p) ./ 800.0
+        z = (1000.0 .- p) ./ 66.0
+        mkC(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                                   Float32(0.09), Float32(0.08), E, Float32(0.75), Float32(-0.004))
+        ll = Dict(CO2 => HITRANLinelist([mkC(700.40, 2.0e-24, 250.0), mkC(701.30, 1.4e-24, 300.0)]))
+        prof = AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.0e-4, nlev)))
+
+        # ── basis builders: partition of unity, correct block count ──
+        Bbox = partial_column_basis(p; n_blocks=3, taper=:boxcar)
+        Bten = partial_column_basis(p; n_blocks=3, taper=:tent)
+        @test size(Bbox) == (nlev, 3) && size(Bten) == (nlev, 3)
+        @test all(≈(1.0), vec(sum(Bbox; dims=2)))          # partition of unity
+        @test all(≈(1.0), vec(sum(Bten; dims=2)))
+        @test all(x -> x == 0.0 || x == 1.0, Bbox)          # boxcar ∈ {0,1}
+        # edges_hPa maps pressure boundaries → contiguous blocks
+        Bed = partial_column_basis(p; edges_hPa=[500.0, 300.0])
+        @test size(Bed, 2) == 3 && all(≈(1.0), vec(sum(Bed; dims=2)))
+        @test_throws ErrorException partial_column_basis(p; n_blocks=2, edges_hPa=[500.0])
+        @test_throws ErrorException partial_column_basis(p; n_blocks=nlev + 1)
+
+        # ── dfs_partition: cut each time ~target DOF accrues ──
+        @test dfs_partition([0.9, 0.4, 0.5, 0.3, 0.7, 0.2]; target_dfs=1.0) == [1:2, 3:5, 6:6]
+        @test dfs_partition([0.1, 0.1, 0.1]; target_dfs=1.0) == [1:3]        # < 1 DOF ⇒ one block
+        @test dfs_partition(fill(1.0, 4); target_dfs=1.0) == [1:1, 2:2, 3:3, 4:4]
+        # from a DFS partition → basis covering all levels
+        Bdfs = partial_column_basis(nlev, dfs_partition([0.9,0.4,0.5,0.3,0.7,0.2]))
+        @test size(Bdfs, 2) == 3 && all(≈(1.0), vec(sum(Bdfs; dims=2)))
+
+        specF = StateVectorSpec(nlev, [CO2];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+        specP = StateVectorSpec(nlev, [PartialColumns(CO2, Bbox)];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+        specT = StateVectorSpec(nlev, [PartialColumns(CO2, Bten)];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+        @test specP.n == 3
+        @test vmr_range(specP, CO2) == 1:3
+        @test_throws ErrorException vmr_range(specP, H2O)
+
+        anF = analytic_jacobian(prof, ll, specF; iasi=iasi, observable=:bt,
+                                apply_continuum=false, with_ils=true)
+        anP = analytic_jacobian(prof, ll, specP; iasi=iasi, observable=:bt,
+                                apply_continuum=false, with_ils=true)
+
+        # boxcar projection identity: block-m column = sum of that block's level columns
+        for (m, blk) in enumerate((1:2, 3:4, 5:6))
+            cs = vec(sum(anF.K[:, blk]; dims=2))
+            @test maximum(abs.(anP.K[:, m] .- cs)) / (maximum(abs.(cs)) + 1e-30) < 1e-10
+        end
+
+        # FD-exact for the tent (overlapping) basis across all block columns
+        fmkw = (iasi=iasi, apply_continuum=false, with_ils=true)
+        anT = analytic_jacobian(prof, ll, specT; iasi=iasi, observable=:bt,
+                                apply_continuum=false, with_ils=true)
+        fdT = finite_difference_jacobian(prof, ll, specT; observable=:bt,
+                  steps=default_fd_steps(specT; δlogvmr=1e-3), fm_kwargs=fmkw)
+        @test maximum(abs.(anT.K .- fdT.K)) / (maximum(abs.(fdT.K)) + 1e-30) < 1e-5
+
+        # unpack: a single block scaled by θ scales exactly those levels
+        θ = zeros(3); θ[2] = log(1.2)
+        prS, _, _ = unpack_state(specP, θ, prof)
+        exp_vmr = copy(prof.vmr[CO2]); exp_vmr[3:4] .*= 1.2
+        @test prS.vmr[CO2] ≈ exp_vmr
+
+        # Sa: N-block diagonal at σ_col²
+        Sa = build_sa(specP, prof; σ_col=0.3)
+        @test size(Sa) == (3, 3) && all(i -> isapprox(Sa[i, i], 0.09), 1:3)
+        @test all(==(0.0), Sa - Diagonal(diag(Sa)))       # independent blocks
+    end
+
     # ── Jacobian Phase 5: optimal-estimation retrieval (synthetic closed loop) ──
     # ── Apodized measurement covariance (IASI L1C, thesis §3.6) ───────────
     @testset "Measurement covariance — apodized Se (IASI L1C)" begin
