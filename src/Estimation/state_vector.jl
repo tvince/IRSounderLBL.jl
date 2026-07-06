@@ -26,14 +26,72 @@ Key operations:
 const _VMR_FLOOR = 1e-30   # guard for log of a zero/absent VMR when packing
 
 """
+    VMRParameterization
+
+How a retrieved gas maps onto state elements. A gas can be carried at full vertical
+resolution (`FullProfile`, one log-VMR per level — the default) or through a reduced
+linear basis `B` (`n_levels × M`) that ties levels together:
+
+    log VMR(level j) = log VMR_ref(j) + Σ_m B[j,m]·θ_m      (θ = the M state params)
+
+The reference `VMR_ref` is the shape of the profile passed to `pack_state` /
+`unpack_state`, so `θ = 0` reproduces it (`xa` is all-zeros for a reduced block).
+Reduced params are **always multiplicative-log** (a scale factor), independent of
+`spec.log_vmr`. `ColumnScale` is the `M=1` case: `B = ones(n_levels,1)`, a single
+column-amount scale — one Jacobian column (one ILS convolution) instead of `n_levels`.
+"""
+abstract type VMRParameterization end
+
+"Retrieve `species` at full vertical resolution (one log-VMR per level)."
+struct FullProfile <: VMRParameterization
+    species::GasSpecies
+end
+
+"""
+    ColumnScale(species)
+
+Retrieve a single multiplicative column scale for `species`: `VMR = VMR_ref·exp(θ)`
+with `θ` the one state element. Basis `B = ones(n_levels,1)`. Its analytic Jacobian
+is the profile-weighted sum of the per-level sensitivities, assembled in the hi-res
+domain and convolved **once** — not `n_levels` per-level columns.
+"""
+struct ColumnScale <: VMRParameterization
+    species::GasSpecies
+end
+
+param_species(p::VMRParameterization) = p.species
+_normalize_param(s::GasSpecies)              = FullProfile(s)
+_normalize_param(p::VMRParameterization)     = p
+
+# Basis (nothing = identity ⇒ full-profile fast path) and param count per gas.
+_param_basis(::FullProfile, n::Int) = nothing
+_param_basis(::ColumnScale, n::Int) = ones(Float64, n, 1)
+_param_m(::FullProfile, n::Int)     = n
+_param_m(::ColumnScale, n::Int)     = 1
+
+"""
+    VMRBlock(species, basis, m, range)
+
+Layout record for one retrieved gas: its state-index `range` (length `m`) and the
+`basis` (`n_levels × m`, or `nothing` for the identity/full-profile fast path).
+"""
+struct VMRBlock
+    species::GasSpecies
+    basis::Union{Nothing, Matrix{Float64}}   # nothing ⇒ identity (full profile)
+    m::Int                                    # number of state params (n_levels or reduced)
+    range::UnitRange{Int}
+end
+
+"""
     StateVectorSpec(n_levels, species;
                     include_temperature=true, include_tsfc=true,
                     include_emissivity=true, log_vmr=true)
 
 Describe the layout of a retrieval state vector. `species` is the ordered list of
-retrieved gases (each contributes an `n_levels`-long VMR block, in this order).
-The constructor precomputes the index range of every block; `spec.n` is the total
-length. See module docstring for the block ordering and conventions.
+retrieved gases; each entry is either a bare `GasSpecies` (⇒ `FullProfile`, an
+`n_levels`-long log-VMR block) or a `VMRParameterization` such as `ColumnScale`,
+which claims fewer elements. The constructor precomputes the index range of every
+block; `spec.n` is the total length. See module docstring for block ordering.
 """
 struct StateVectorSpec
     n_levels::Int
@@ -43,13 +101,14 @@ struct StateVectorSpec
     include_emissivity::Bool
     log_vmr::Bool
     temp_range::UnitRange{Int}                       # 1:0 (empty) if absent
-    vmr_ranges::Vector{Pair{GasSpecies, UnitRange{Int}}}   # ordered as `species`
+    vmr_ranges::Vector{Pair{GasSpecies, UnitRange{Int}}}   # (species => range), ordered
+    vmr_blocks::Vector{VMRBlock}                     # parallel to vmr_ranges, carries basis
     tsfc_index::Int                                  # 0 if absent
     emis_index::Int                                  # 0 if absent
     n::Int                                           # total state length
 end
 
-function StateVectorSpec(n_levels::Int, species::AbstractVector{GasSpecies};
+function StateVectorSpec(n_levels::Int, species::AbstractVector;
                          include_temperature::Bool = true,
                          include_tsfc::Bool        = true,
                          include_emissivity::Bool  = true,
@@ -61,9 +120,15 @@ function StateVectorSpec(n_levels::Int, species::AbstractVector{GasSpecies};
         temp_range = (idx + 1):(idx + n_levels); idx += n_levels
     end
     vmr_ranges = Pair{GasSpecies, UnitRange{Int}}[]
-    for s in species
-        r = (idx + 1):(idx + n_levels); idx += n_levels
+    vmr_blocks = VMRBlock[]
+    for entry in species
+        p = _normalize_param(entry)
+        s = param_species(p)
+        m = _param_m(p, n_levels)
+        B = _param_basis(p, n_levels)
+        r = (idx + 1):(idx + m); idx += m
         push!(vmr_ranges, s => r)
+        push!(vmr_blocks, VMRBlock(s, B, m, r))
     end
     tsfc_index = 0
     if include_tsfc
@@ -73,9 +138,9 @@ function StateVectorSpec(n_levels::Int, species::AbstractVector{GasSpecies};
     if include_emissivity
         idx += 1; emis_index = idx
     end
-    return StateVectorSpec(n_levels, collect(species), include_temperature,
-                           include_tsfc, include_emissivity, log_vmr,
-                           temp_range, vmr_ranges, tsfc_index, emis_index, idx)
+    return StateVectorSpec(n_levels, GasSpecies[b.species for b in vmr_blocks],
+                           include_temperature, include_tsfc, include_emissivity, log_vmr,
+                           temp_range, vmr_ranges, vmr_blocks, tsfc_index, emis_index, idx)
 end
 
 Base.length(spec::StateVectorSpec) = spec.n
@@ -90,8 +155,15 @@ function state_labels(spec::StateVectorSpec)::Vector{String}
     labels = String[]
     spec.include_temperature && append!(labels, ["T[$i]" for i in 1:spec.n_levels])
     pre = spec.log_vmr ? "logVMR" : "VMR"
-    for (s, _) in spec.vmr_ranges
-        append!(labels, ["$(pre)_$(SPECIES_NAME[s])[$i]" for i in 1:spec.n_levels])
+    for b in spec.vmr_blocks
+        nm = SPECIES_NAME[b.species]
+        if b.basis === nothing
+            append!(labels, ["$(pre)_$nm[$i]" for i in 1:spec.n_levels])
+        elseif b.m == 1
+            push!(labels, "logVMRscale_$nm")
+        else
+            append!(labels, ["logVMRscale_$nm[$k]" for k in 1:b.m])
+        end
     end
     spec.include_tsfc       && push!(labels, "T_sfc")
     spec.include_emissivity && push!(labels, "emissivity")
@@ -112,10 +184,14 @@ function pack_state(spec::StateVectorSpec, prof::AtmosphericProfile;
         error("profile has $(length(prof.temperature)) levels, spec expects $(spec.n_levels)")
     x = zeros(Float64, spec.n)
     spec.include_temperature && (x[spec.temp_range] .= prof.temperature)
-    for (s, r) in spec.vmr_ranges
-        haskey(prof.vmr, s) || error("profile is missing retrieved species $s")
-        v = prof.vmr[s]
-        x[r] .= spec.log_vmr ? log.(max.(v, _VMR_FLOOR)) : v
+    for b in spec.vmr_blocks
+        haskey(prof.vmr, b.species) || error("profile is missing retrieved species $(b.species)")
+        if b.basis === nothing
+            v = prof.vmr[b.species]
+            x[b.range] .= spec.log_vmr ? log.(max.(v, _VMR_FLOOR)) : v
+        else
+            x[b.range] .= 0.0    # reduced block: θ=0 ⇒ the packed profile is the reference
+        end
     end
     spec.include_tsfc &&
         (x[spec.tsfc_index] = isnothing(T_sfc) ? prof.temperature[1] : T_sfc)
@@ -140,9 +216,15 @@ function unpack_state(spec::StateVectorSpec, x::AbstractVector{<:Real},
     for (s, v) in base_prof.vmr
         vmr[s] = copy(v)
     end
-    for (s, r) in spec.vmr_ranges
-        xv = x[r]
-        vmr[s] = spec.log_vmr ? exp.(collect(Float64, xv)) : collect(Float64, xv)
+    for b in spec.vmr_blocks
+        xv = collect(Float64, x[b.range])
+        if b.basis === nothing
+            vmr[b.species] = spec.log_vmr ? exp.(xv) : xv
+        else
+            # Reduced block: multiplicative-log about the reference shape in base_prof.
+            ref = base_prof.vmr[b.species]
+            vmr[b.species] = ref .* exp.(b.basis * xv)
+        end
     end
     prof = AtmosphericProfile(copy(base_prof.pressure), T, copy(base_prof.altitude), vmr)
     T_sfc = spec.include_tsfc ? Float64(x[spec.tsfc_index]) : T[1]
@@ -153,8 +235,13 @@ end
 function Base.show(io::IO, spec::StateVectorSpec)
     blocks = String[]
     spec.include_temperature && push!(blocks, "T($(spec.n_levels))")
-    for (s, _) in spec.vmr_ranges
-        push!(blocks, "$(spec.log_vmr ? "logVMR" : "VMR")_$(SPECIES_NAME[s])($(spec.n_levels))")
+    for b in spec.vmr_blocks
+        nm = SPECIES_NAME[b.species]
+        if b.basis === nothing
+            push!(blocks, "$(spec.log_vmr ? "logVMR" : "VMR")_$nm($(spec.n_levels))")
+        else
+            push!(blocks, "col_$nm($(b.m))")
+        end
     end
     spec.include_tsfc       && push!(blocks, "T_sfc")
     spec.include_emissivity && push!(blocks, "ε")

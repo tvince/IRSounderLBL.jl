@@ -81,8 +81,9 @@ function default_fd_steps(spec::StateVectorSpec;
                           δε::Float64       = 1e-3)::Vector{Float64}
     s = zeros(Float64, spec.n)
     spec.include_temperature && (s[spec.temp_range] .= δT)
-    for (_, r) in spec.vmr_ranges
-        s[r] .= spec.log_vmr ? δlogvmr : δvmr
+    for b in spec.vmr_blocks
+        # Reduced blocks carry a multiplicative-log scale ⇒ always the log step.
+        s[b.range] .= (b.basis !== nothing || spec.log_vmr) ? δlogvmr : δvmr
     end
     spec.include_tsfc       && (s[spec.tsfc_index] = δtsfc)
     spec.include_emissivity && (s[spec.emis_index] = δε)

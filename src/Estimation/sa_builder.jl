@@ -90,6 +90,9 @@ cross-field correlations are zero.
              scalars/vectors for per-species control.
 - `L_T`, `L_vmr` : correlation length in log-pressure (≈ scale heights; `L=1` ties
              levels ~one scale height apart). `L_vmr` may be a `Dict` per species.
+- `σ_col`   : prior std on each reduced log-scale param (a `ColumnScale`/partial-column
+             amount; `σ=0.2` ≈ ±20 %). Scalar/vector or a `Dict{GasSpecies}`. Reduced
+             blocks are diagonal (independent), so no correlation length is needed.
 - `σ_tsfc` : surface-temperature std (K); used iff `spec.include_tsfc`.
 - `σ_emis` : emissivity std; used iff `spec.include_emissivity`.
 - `jitter` : relative diagonal inflation `Sₐ[i,i] *= (1+jitter)`; a small value
@@ -101,6 +104,7 @@ issued otherwise. Pass it straight to `optimal_estimation` as `Sa`.
 function build_sa(spec::StateVectorSpec, base_prof::AtmosphericProfile;
                   σ_T = 2.0, L_T::Real = 1.0,
                   σ_vmr = 0.5, L_vmr = 1.0,
+                  σ_col = 0.2,
                   σ_tsfc::Real = 2.0, σ_emis::Real = 0.02,
                   kernel::Symbol = :matern52,
                   jitter::Real = 0.0)::Symmetric{Float64, Matrix{Float64}}
@@ -119,10 +123,19 @@ function build_sa(spec::StateVectorSpec, base_prof::AtmosphericProfile;
         σ = _resolve_σ(σ_T, spec.n_levels, "σ_T")
         Sa[spec.temp_range, spec.temp_range] .= _corr_block(logp, σ, Float64(L_T), kern)
     end
-    for (s, r) in spec.vmr_ranges
-        σ = _species_σ(σ_vmr, s, spec.n_levels)
-        L = _species_L(L_vmr, s)
-        Sa[r, r] .= _corr_block(logp, σ, L, kern)
+    for b in spec.vmr_blocks
+        if b.basis === nothing
+            σ = _species_σ(σ_vmr, b.species, spec.n_levels)
+            L = _species_L(L_vmr, b.species)
+            Sa[b.range, b.range] .= _corr_block(logp, σ, L, kern)
+        else
+            # Reduced block (e.g. ColumnScale): σ_col is the prior std on each
+            # log-scale param (a column amount); diagonal — blocks are independent.
+            σc = _species_σ(σ_col, b.species, b.m)
+            @inbounds for (k, i) in enumerate(b.range)
+                Sa[i, i] = σc[k]^2
+            end
+        end
     end
     spec.include_tsfc       && (Sa[spec.tsfc_index, spec.tsfc_index] = Float64(σ_tsfc)^2)
     spec.include_emissivity && (Sa[spec.emis_index, spec.emis_index] = Float64(σ_emis)^2)

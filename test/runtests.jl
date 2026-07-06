@@ -1330,6 +1330,65 @@ using LinearAlgebra
         check_lm(VPWLineMixing(relmat; whitelist=Set(["CO2Q"])))         # full-matrix eigendecomp
     end
 
+    # ── ColumnScale reduced parameterization: FD-exact + projection identity ──
+    @testset "ColumnScale reduced VMR parameterization" begin
+        iasi = IASIInstrument(699.0, 703.0, 0.5, 9, 2.0, 0.5)
+        nlev = 6
+        p = collect(range(1000.0, 200.0; length=nlev))
+        T = 288.0 .+ (225.0 - 288.0) .* (1000.0 .- p) ./ 800.0
+        z = (1000.0 .- p) ./ 66.0
+        mkC(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                                   Float32(0.09), Float32(0.08), E, Float32(0.75), Float32(-0.004))
+        ll = Dict(CO2 => HITRANLinelist([mkC(700.40, 2.0e-24, 250.0), mkC(701.30, 1.4e-24, 300.0)]))
+        prof = AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.0e-4, nlev)))
+
+        specF = StateVectorSpec(nlev, [CO2];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+        specC = StateVectorSpec(nlev, [ColumnScale(CO2)];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+
+        # Layout: one param, basis present (vs identity for the full profile).
+        @test specC.n == 1
+        @test length(specF.vmr_ranges[1].second) == nlev
+        @test state_labels(specC) == ["logVMRscale_$(SPECIES_NAME[CO2])"]
+        @test specC.vmr_blocks[1].basis !== nothing && specF.vmr_blocks[1].basis === nothing
+
+        # pack/unpack: θ=0 ⇒ the reference shape; θ ⇒ uniform multiplicative scale.
+        @test pack_state(specC, prof) == [0.0]
+        pr0, _, _ = unpack_state(specC, [0.0], prof)
+        @test pr0.vmr[CO2] ≈ prof.vmr[CO2]
+        prS, _, _ = unpack_state(specC, [log(1.1)], prof)
+        @test prS.vmr[CO2] ≈ 1.1 .* prof.vmr[CO2]
+
+        fmkw = (iasi=iasi, apply_continuum=false, with_ils=true)
+        anF = analytic_jacobian(prof, ll, specF; iasi=iasi, observable=:bt,
+                                apply_continuum=false, with_ils=true)
+        anC = analytic_jacobian(prof, ll, specC; iasi=iasi, observable=:bt,
+                                apply_continuum=false, with_ils=true)
+
+        # Projection identity: a uniform column scale is the sum of the per-level
+        # log-VMR columns (ILS linearity ⇒ project-then-convolve == convolve-then-sum).
+        colsum = vec(sum(anF.K[:, specF.vmr_ranges[1].second]; dims=2))
+        @test size(anC.K, 2) == 1
+        @test maximum(abs.(anC.K[:, 1] .- colsum)) / (maximum(abs.(colsum)) + 1e-30) < 1e-10
+
+        # FD-exact against the reduced state.
+        fdC = finite_difference_jacobian(prof, ll, specC; observable=:bt,
+                  steps=default_fd_steps(specC; δlogvmr=1e-3), fm_kwargs=fmkw)
+        @test maximum(abs.(anC.y0 .- fdC.y0)) < 1e-9
+        @test maximum(abs.(anC.K[:, 1] .- fdC.K[:, 1])) / (maximum(abs.(fdC.K[:, 1])) + 1e-30) < 1e-5
+
+        # Sa reduced block: diagonal σ_col² (independent, no correlation length).
+        Sa = build_sa(specC, prof; σ_col=0.2)
+        @test size(Sa) == (1, 1) && isapprox(Sa[1, 1], 0.04)
+
+        # Mixed spec: full-profile + column in one state vector, ranges contiguous.
+        specM = StateVectorSpec(nlev, [H2O, ColumnScale(CO2)];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+        @test specM.n == nlev + 1
+        @test specM.vmr_ranges[1].second == 1:nlev && specM.vmr_ranges[2].second == (nlev+1):(nlev+1)
+    end
+
     # ── Jacobian Phase 5: optimal-estimation retrieval (synthetic closed loop) ──
     # ── Apodized measurement covariance (IASI L1C, thesis §3.6) ───────────
     @testset "Measurement covariance — apodized Se (IASI L1C)" begin
