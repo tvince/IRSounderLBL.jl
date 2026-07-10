@@ -29,7 +29,8 @@ const CO2_PPM, ε_SEA = 432.0, 0.98
 const LM_CUTOFF = 5.0
 const LM_METHOD = lowercase(get(ENV, "JOINT_LM", "vpy"))   # "vpy" (default) or "vpw"
 const TAG = LM_METHOD == "vpw" ? "_vpw" : ""
-const O3_SMIN   = 1e-23
+const O3_SMIN   = parse(Float64, get(ENV, "O3_SMIN", "1e-23"))
+const O3TAG     = O3_SMIN == 1e-23 ? "" : @sprintf("_o3%.0e", O3_SMIN)
 const TARGET_DFS = 1.0                     # ≈ one DOF per H2O bulk layer
 const BASELINE  = "data/iasi_profile_retrieval.jld2"
 const PRIOR_O3  = "data/iasi_profile_o3.jld2"   # VP_Y lm=5, +O3 (FIXED VMR), T-only (key rC)
@@ -169,12 +170,12 @@ end
 
 # ── Dump ────────────────────────────────────────────────────────────────────────────
 nedt = sqrt.(diag(Se))
-open("data/iasi_joint$(TAG)_fit.csv", "w") do io
+open("data/iasi_joint$(TAG)$(O3TAG)_fit.csv", "w") do io
     println(io, "wavenumber_cm-1,bt_obs_K,res_prior_K,res_joint_K,nedt_K")
     for i in eachindex(νobs)
         @printf(io, "%.4f,%.4f,%.4f,%.4f,%.4f\n", νobs[i], y[i], dPrior.res[i], dJ.res[i], nedt[i])
     end
 end
-jldsave("data/iasi_joint$(TAG).jld2"; rJ=rJ, ν=νobs, y=y, blocks=blocks,
+jldsave("data/iasi_joint$(TAG)$(O3TAG).jld2"; rJ=rJ, ν=νobs, y=y, blocks=blocks,
         dfs_h2o=dfs_h2o, o3_scale=o3_scale, h2o_scales=h2o_scales)
-prog("wrote data/iasi_joint$(TAG)_{fit.csv,jld2}")
+prog("wrote data/iasi_joint$(TAG)$(O3TAG)_{fit.csv,jld2}")
