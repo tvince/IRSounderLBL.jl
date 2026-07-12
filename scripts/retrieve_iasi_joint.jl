@@ -31,6 +31,8 @@ const LM_METHOD = lowercase(get(ENV, "JOINT_LM", "vpy"))   # "vpy" (default) or 
 const TAG = LM_METHOD == "vpw" ? "_vpw" : ""
 const O3_SMIN   = parse(Float64, get(ENV, "O3_SMIN", "1e-23"))
 const O3TAG     = O3_SMIN == 1e-23 ? "" : @sprintf("_o3%.0e", O3_SMIN)
+const BASE_ATM  = Symbol(get(ENV, "JOINT_BASE", "us_standard"))   # AFGL climate zone
+const BASETAG   = BASE_ATM == :us_standard ? "" : "_$(BASE_ATM)"
 const TARGET_DFS = 1.0                     # ≈ one DOF per H2O bulk layer
 const BASELINE  = "data/iasi_profile_retrieval.jld2"
 const PRIOR_O3  = "data/iasi_profile_o3.jld2"   # VP_Y lm=5, +O3 (FIXED VMR), T-only (key rC)
@@ -52,9 +54,11 @@ rPrior = load(PRIOR_O3)["rC"]              # best prior: fixed-VMR O3, T-only
 @printf("  prior (fixed-O3, T-only): χ²=%.1f  rms=%.4f K\n",
         rPrior.chi2, sqrt(sum(abs2, rPrior.y_fit .- y)/length(y))); flush(stdout)
 
-base = afgl_us_standard_50lev()
+base = afgl_atmosphere(BASE_ATM)
 base.vmr[CO2] .*= (CO2_PPM * 1e-6) / base.vmr[CO2][1]
 nlev = n_levels(base)
+@printf("  base atmosphere: AFGL %s (T_sfc=%.1f K, O3col∝%.4f)\n", BASE_ATM,
+        base.temperature[1], sum(base.vmr[O3][1:end-1] .* abs.(diff(base.pressure)))); flush(stdout)
 
 prog("Loading CO₂(1–4) / H₂O(1–3) / O₃(1–4, S>$(O3_SMIN)) linelists …")
 co2 = load_linelist("data/co2_645_2760", 1:4; ν_min=ν_LO-25, ν_max=ν_HI+25)
@@ -170,12 +174,12 @@ end
 
 # ── Dump ────────────────────────────────────────────────────────────────────────────
 nedt = sqrt.(diag(Se))
-open("data/iasi_joint$(TAG)$(O3TAG)_fit.csv", "w") do io
+open("data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)_fit.csv", "w") do io
     println(io, "wavenumber_cm-1,bt_obs_K,res_prior_K,res_joint_K,nedt_K")
     for i in eachindex(νobs)
         @printf(io, "%.4f,%.4f,%.4f,%.4f,%.4f\n", νobs[i], y[i], dPrior.res[i], dJ.res[i], nedt[i])
     end
 end
-jldsave("data/iasi_joint$(TAG)$(O3TAG).jld2"; rJ=rJ, ν=νobs, y=y, blocks=blocks,
+jldsave("data/iasi_joint$(TAG)$(O3TAG)$(BASETAG).jld2"; rJ=rJ, ν=νobs, y=y, blocks=blocks,
         dfs_h2o=dfs_h2o, o3_scale=o3_scale, h2o_scales=h2o_scales)
-prog("wrote data/iasi_joint$(TAG)$(O3TAG)_{fit.csv,jld2}")
+prog("wrote data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)_{fit.csv,jld2}")
