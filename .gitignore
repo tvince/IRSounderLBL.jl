@@ -15,6 +15,11 @@ data/**
 # data (line lists, line-mixing, broadening, LBLRTM refs) stays ignored; fetch it
 # via download_data() / Julia Artifacts. See data/cia/SOURCE.md for HITRAN provenance.
 !data/afgl_us_standard_50lev.csv
+!data/afgl_tropical_50lev.csv
+!data/afgl_midlatitude_summer_50lev.csv
+!data/afgl_midlatitude_winter_50lev.csv
+!data/afgl_subarctic_summer_50lev.csv
+!data/afgl_subarctic_winter_50lev.csv
 !data/mt_ckd_h2o/mt_ckd43_h2o_coeffs.csv
 !data/mt_ckd_co2/mt_ckd_co2_coeffs.csv
 !data/cia/CO2-CO2_2024.cia

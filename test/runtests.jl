@@ -38,6 +38,31 @@ using LinearAlgebra
         @test sa.temperature[1] < us.temperature[1]   # subarctic cooler
     end
 
+    @testset "AFGL 50-level model atmospheres" begin
+        names = (:us_standard, :tropical, :midlatitude_summer,
+                 :midlatitude_winter, :subarctic_summer, :subarctic_winter)
+        atm = Dict(n => afgl_atmosphere(n) for n in names)
+        for (n, a) in atm
+            @test n_levels(a) == 50
+            @test a.pressure[1] > a.pressure[end]         # surface-first
+            for sp in (H2O, CO2, O3, N2O, CH4, CO)
+                @test haskey(a.vmr, sp)
+            end
+            @test a.vmr[CO2][1] ≈ 4.15e-4 rtol=1e-3       # CO2 scaled to 415 ppm surface
+        end
+        # physical ordering of surface temperature
+        @test atm[:tropical].temperature[1] > atm[:us_standard].temperature[1] > atm[:subarctic_winter].temperature[1]
+        # tropical O3: lower column but higher-altitude peak than US standard
+        o3col(a) = sum(a.vmr[O3][1:end-1] .* abs.(diff(a.pressure)))
+        @test o3col(atm[:tropical]) < o3col(atm[:us_standard])   # tropics: lower O3 column
+        # named wrappers agree with the generic form
+        @test afgl_tropical_50lev().temperature == atm[:tropical].temperature
+        @test afgl_us_standard_50lev().temperature == atm[:us_standard].temperature
+        # string form (hyphen or underscore) and error path
+        @test afgl_atmosphere("midlatitude-summer").temperature == atm[:midlatitude_summer].temperature
+        @test_throws ErrorException afgl_atmosphere(:bogus)
+    end
+
     @testset "Layer Properties" begin
         prof = us_standard_atmosphere()
         layers = layer_properties(prof)
