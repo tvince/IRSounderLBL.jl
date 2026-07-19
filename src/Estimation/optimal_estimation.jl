@@ -288,7 +288,7 @@ optimal_estimation(y, spec, base, linelists; xa, Sa, Se, channel_mask=mask)
 ```
 """
 function exclude_channels(ν::AbstractVector{<:Real}, ranges::Tuple{<:Real,<:Real}...)
-    keep = trues(length(ν))
+    keep = fill(true, length(ν))     # Vector{Bool} to match the documented return type
     for (lo, hi) in ranges
         keep .&= .!((ν .>= lo) .& (ν .<= hi))
     end
