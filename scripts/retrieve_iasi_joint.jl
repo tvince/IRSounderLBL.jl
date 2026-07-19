@@ -33,6 +33,11 @@ const O3_SMIN   = parse(Float64, get(ENV, "O3_SMIN", "1e-23"))
 const O3TAG     = O3_SMIN == 1e-23 ? "" : @sprintf("_o3%.0e", O3_SMIN)
 const BASE_ATM  = Symbol(get(ENV, "JOINT_BASE", "us_standard"))   # AFGL climate zone
 const BASETAG   = BASE_ATM == :us_standard ? "" : "_$(BASE_ATM)"
+# Optional channel blacklist dropped from the FIT (diagnostics/χ² use kept channels;
+# residual plots still show these channels). E.g. JOINT_QMASK="719-723,665-668" drops
+# the CO2 ν₂ Q-branches. Comma-separated lo-hi wavenumber intervals.
+const QMASK_SPEC = get(ENV, "JOINT_QMASK", "")
+const QTAG       = isempty(QMASK_SPEC) ? "" : "_qmask"
 const TARGET_DFS = 1.0                     # ≈ one DOF per H2O bulk layer
 const BASELINE  = "data/iasi_profile_retrieval.jld2"
 const PRIOR_O3  = "data/iasi_profile_o3.jld2"   # VP_Y lm=5, +O3 (FIXED VMR), T-only (key rC)
@@ -49,6 +54,16 @@ prog("Loading baseline y / Se …")
 bl = load(BASELINE)
 νobs = bl["ν"]; y = bl["y"]; Se = bl["Se"]
 @printf("  %d channels\n", length(y)); flush(stdout)
+
+# Build the optional channel blacklist from JOINT_QMASK.
+_parse_ranges(s) = isempty(s) ? Tuple{Float64,Float64}[] :
+    [(parse(Float64, split(p, "-")[1]), parse(Float64, split(p, "-")[2])) for p in split(s, ",")]
+const QRANGES  = _parse_ranges(QMASK_SPEC)
+const CHAN_MASK = isempty(QRANGES) ? nothing : exclude_channels(νobs, QRANGES...)
+if CHAN_MASK !== nothing
+    @printf("  channel blacklist JOINT_QMASK=%s → dropping %d of %d channels from the fit\n",
+            QMASK_SPEC, count(.!CHAN_MASK), length(y)); flush(stdout)
+end
 
 rPrior = load(PRIOR_O3)["rC"]              # best prior: fixed-VMR O3, T-only
 @printf("  prior (fixed-O3, T-only): χ²=%.1f  rms=%.4f K\n",
@@ -151,8 +166,19 @@ dPrior = report("PRIOR: VP_Y lm=5 + fixed O3, T-only", rPrior)
 
 prog("Final joint retrieval ($(uppercase(LM_METHOD)): T + H₂O bulk layers + O₃ column) …")
 @time rJ = optimal_estimation(y, spec, base, linelists;
-                              xa=xa, Sa=Sa, Se=Se, ε_fixed=ε_SEA, fm_kwargs=fm, verbose=true)
+                              xa=xa, Sa=Sa, Se=Se, channel_mask=CHAN_MASK,
+                              ε_fixed=ε_SEA, fm_kwargs=fm, verbose=true)
 dJ = report("JOINT $(uppercase(LM_METHOD)): T + H₂O($(length(blocks)) layers) + O₃ column", rJ)
+
+# When a blacklist is active, split the residual into fit (kept) vs held-out (dropped)
+# channels — the held-out block shows what the retrieval was NOT allowed to fit.
+if CHAN_MASK !== nothing
+    keep = CHAN_MASK; drop = .!CHAN_MASK
+    @printf("  [blacklist] fit rms (kept %d ch)=%.4f K   held-out rms (dropped %d ch)=%.4f K\n",
+            count(keep), rms(dJ.res[keep]), count(drop), rms(dJ.res[drop]))
+    @printf("  [blacklist] held-out max|res|=%.3f K at ν=%.2f\n",
+            maximum(abs.(dJ.res[drop])), νobs[drop][argmax(abs.(dJ.res[drop]))])
+end
 
 # Retrieved reduced params: O3 column scale and per-layer H2O scales.
 o3_scale = exp(rJ.x[vmr_range(spec, O3)][1])
@@ -174,12 +200,12 @@ end
 
 # ── Dump ────────────────────────────────────────────────────────────────────────────
 nedt = sqrt.(diag(Se))
-open("data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)_fit.csv", "w") do io
+open("data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)$(QTAG)_fit.csv", "w") do io
     println(io, "wavenumber_cm-1,bt_obs_K,res_prior_K,res_joint_K,nedt_K")
     for i in eachindex(νobs)
         @printf(io, "%.4f,%.4f,%.4f,%.4f,%.4f\n", νobs[i], y[i], dPrior.res[i], dJ.res[i], nedt[i])
     end
 end
-jldsave("data/iasi_joint$(TAG)$(O3TAG)$(BASETAG).jld2"; rJ=rJ, ν=νobs, y=y, blocks=blocks,
+jldsave("data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)$(QTAG).jld2"; rJ=rJ, ν=νobs, y=y, blocks=blocks,
         dfs_h2o=dfs_h2o, o3_scale=o3_scale, h2o_scales=h2o_scales)
-prog("wrote data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)_{fit.csv,jld2}")
+prog("wrote data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)$(QTAG)_{fit.csv,jld2}")

@@ -1680,6 +1680,35 @@ using LinearAlgebra
         rD = optimal_estimation(yA, specA, base, linelists;
                                 xa=[288.0], Sa=reshape([100.0],1,1), Se=SeA_ap, fm_kwargs=fm)
         @test rD.converged && isapprox(rD.x[1], 298.0; atol=0.1)
+
+        # (E) Channel blacklist: exclude_channels + channel_mask.
+        maskE = exclude_channels(rB.ν, (701.5, 705.0))       # drop the upper band
+        @test maskE isa Vector{Bool} && 0 < count(maskE) < length(rB.ν)
+        @test all(rB.ν[.!maskE] .>= 701.5)                    # only the named range dropped
+        @test count(exclude_channels(rB.ν)) == length(rB.ν)   # no ranges ⇒ keep all
+        # An all-true mask reproduces the unmasked retrieval to round-off.
+        rE0 = optimal_estimation(yB, specB, base, linelists;
+                                 xa=xaB, Sa=SaB, Se=SeB, fm_kwargs=fm,
+                                 channel_mask=trues(length(yB)))
+        @test isapprox(rE0.x, rB.x; atol=1e-10)
+        @test isapprox(rE0.chi2, rB.chi2; rtol=1e-10)
+        @test rE0.channel_mask == trues(length(yB))
+        # A real blacklist: spectra stay full-grid, diagnostics live on kept channels.
+        rE = optimal_estimation(yB, specB, base, linelists;
+                                xa=xaB, Sa=SaB, Se=SeB, fm_kwargs=fm, channel_mask=maskE)
+        @test rE.converged
+        @test length(rE.y_fit) == length(rE.ν) == length(yB)  # full-grid spectra
+        @test size(rE.K) == (length(yB), specB.n)             # full-grid Jacobian
+        @test rE.channel_mask == maskE
+        @test size(rE.G) == (specB.n, count(maskE))           # gain over kept channels
+        @test isapprox(rE.A, rE.G * rE.K[maskE, :]; rtol=1e-10)          # A == G·K[keep]
+        @test isapprox(rE.dof + rE.dfn, count(maskE); rtol=1e-10)        # DFS+DFN = #kept
+        @test 0.0 ≤ rE.dof ≤ rB.dof + 1e-8    # dropping channels can't add information
+        # Bad masks are rejected.
+        @test_throws ErrorException optimal_estimation(yB, specB, base, linelists;
+                xa=xaB, Sa=SaB, Se=SeB, fm_kwargs=fm, channel_mask=falses(length(yB)))
+        @test_throws ErrorException optimal_estimation(yB, specB, base, linelists;
+                xa=xaB, Sa=SaB, Se=SeB, fm_kwargs=fm, channel_mask=trues(length(yB)+1))
     end
 
     # ── Phase 4: FFT-based ILS reproduces the direct convolution ──────────────

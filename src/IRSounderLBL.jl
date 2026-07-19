@@ -107,7 +107,7 @@ export VMRParameterization, FullProfile, ColumnScale, PartialColumns
 export partial_column_basis, dfs_partition, vmr_range
 export Jacobian, finite_difference_jacobian, default_fd_steps, column
 export analytic_jacobian
-export optimal_estimation, RetrievalResult
+export optimal_estimation, RetrievalResult, exclude_channels
 export apodized_measurement_covariance, scene_nedt, scene_measurement_covariance
 export build_sa
 export dB_dT

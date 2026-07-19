@@ -50,6 +50,14 @@ Rodgers diagnostics at the solution (thesis §3.2, §3.4):
 - `H`     — Shannon information content `−½ log₂|I − A|` (bits)
 - `S_noise`     — retrieval-noise covariance `Sᵣ = G Sₑ Gᵀ`
 - `S_smoothing` — smoothing-error covariance `Sₛ = (I − A) Sₐ (I − A)ᵀ`
+- `channel_mask` — Bool, length `n_y`; the channels that were **used** in the fit
+  (all `true` unless a blacklist was passed via `optimal_estimation`'s `channel_mask`).
+
+Field alignment when channels are blacklisted: `K`, `y_fit`, `ν` stay **full-grid** and
+mutually aligned (so residual plots still show the excluded channels), whereas the
+information-content diagnostics `G`, `A`, `S_hat`, `S_noise`, `S_smoothing`, `dof`,
+`dfn`, `H`, `chi2` reflect only the **kept** channels — `G` has `count(channel_mask)`
+columns and pairs with `K[channel_mask, :]` (so `A == G * K[channel_mask, :]`).
 """
 struct RetrievalResult
     x::Vector{Float64}
@@ -69,6 +77,7 @@ struct RetrievalResult
     chi2::Float64
     y_fit::Vector{Float64}
     ν::Vector{Float64}
+    channel_mask::Vector{Bool}
 end
 
 function Base.show(io::IO, r::RetrievalResult)
@@ -99,6 +108,13 @@ Retrieve the state `x` from the observed spectrum `y` by optimal estimation.
   `unpack_state`).
 - `xa`, `Sa` — a-priori state and its covariance (state space; VMR in log).
 - `Se` — measurement-error covariance (channel space); a `Diagonal` is efficient.
+- `channel_mask` — optional `Bool` vector, length `length(y)`, marking which channels
+  to **use** in the inversion (`true` = keep). Blacklisted (`false`) channels are
+  dropped from the residual, gradient, Hessian and all diagnostics. With a **dense**
+  (apodized/scene) `Se` this is done correctly by inverting the kept sub-block
+  `Se[keep, keep]` — *not* by zeroing rows of `Se⁻¹`, which would be wrong for a
+  correlated `Se`. Build one with [`exclude_channels`](@ref). `nothing` (default) keeps
+  every channel. See `RetrievalResult` for how the result fields align in this case.
 - `x0` — first guess (default `xa`).
 - `method` — `:levenberg_marquardt` (default) or `:gauss_newton` (`γ ≡ 0`).
 - `ε_fixed` — surface emissivity used by the forward model when ε is **not** in the
@@ -119,6 +135,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
                             xa::AbstractVector{<:Real},
                             Sa::AbstractMatrix{<:Real},
                             Se::AbstractMatrix{<:Real},
+                            channel_mask::Union{Nothing,AbstractVector{Bool}} = nothing,
                             x0::AbstractVector{<:Real} = copy(xa),
                             method::Symbol = :levenberg_marquardt,
                             max_iter::Int = 15,
@@ -139,15 +156,30 @@ function optimal_estimation(y::AbstractVector{<:Real},
     length(y) == size(Se, 1) == size(Se, 2) ||
         error("Se must be n_y×n_y with n_y = length(y) = $(length(y))")
 
+    # Channel blacklist: `keep` selects the channels that participate in the inversion.
+    # `kidx` indexes them into the full (forward-model) channel grid; the forward model
+    # and Jacobian are always evaluated on the full grid and subset here, so `K`/`y_fit`/
+    # `ν` stay full-grid while the fit math uses only the kept sub-block.
+    keep = channel_mask === nothing ? trues(length(y)) : convert(Vector{Bool}, channel_mask)
+    length(keep) == length(y) ||
+        error("channel_mask length $(length(keep)) ≠ length(y) $(length(y))")
+    any(keep) || error("channel_mask excludes every channel")
+    kidx = findall(keep)
+
     Sa_inv = Matrix(inv(Sa))
     xa_v   = collect(Float64, xa)
     yv     = collect(Float64, y)
+    yv_k   = yv[kidx]
 
     # Sₑ is constant across the whole retrieval, so factor it once and reuse. A
     # `Diagonal` keeps its cheap O(n) solve; a dense (apodized/scene) Sₑ is solved
     # via a single Cholesky instead of refactorizing on every `Se \ …` — the line
-    # search alone does up to `max_linesearch` solves per outer iteration.
-    Se_fac = Se isa Diagonal ? Se : cholesky(Symmetric(Matrix(Se)))
+    # search alone does up to `max_linesearch` solves per outer iteration. When
+    # channels are blacklisted we factor the KEPT sub-block `Se[keep,keep]` (inverting
+    # the sub-block is the correct restriction for a correlated Sₑ — zeroing rows of
+    # Sₑ⁻¹ would not be).
+    Se_k   = Se isa Diagonal ? Diagonal(collect(diag(Se))[kidx]) : Matrix(Se)[kidx, kidx]
+    Se_fac = Se_k isa Diagonal ? Se_k : cholesky(Symmetric(Se_k))
 
     # Surface emissivity: from the state when retrieved, else the fixed scene value
     # `ε_fixed` (`unpack_state`'s εs is the 1.0 fallback, used only when ε ∉ state).
@@ -166,8 +198,9 @@ function optimal_estimation(y::AbstractVector{<:Real},
     end
 
     x = collect(Float64, x0)
-    F, K, νout = forward_jac(x)
-    resid = yv .- F
+    F, Kfull, νout = forward_jac(x)     # F, Kfull on the FULL channel grid
+    K     = Kfull[kidx, :]              # kept sub-block used by the inversion math
+    resid = yv_k .- @view F[kidx]
     Sei_r = Se_fac \ resid
     dx_a  = x .- xa_v
     J = _oe_cost(resid, Sei_r, dx_a, Sa_inv * dx_a)
@@ -188,7 +221,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
             Δx = H \ g
             x_try = x .+ Δx
             F_try = forward(x_try)
-            r_try = yv .- F_try
+            r_try = yv_k .- @view F_try[kidx]
             Sei_rt = Se_fac \ r_try
             dxa_t  = x_try .- xa_v
             J_try  = _oe_cost(r_try, Sei_rt, dxa_t, Sa_inv * dxa_t)
@@ -197,8 +230,9 @@ function optimal_estimation(y::AbstractVector{<:Real},
                 # Rodgers step-size convergence test dᵢ² = Δxᵀ Ŝ⁻¹ Δx.
                 d2 = Δx' * (Sa_inv * Δx .+ KtSeiK * Δx)
                 x = x_try
-                F, K, νout = forward_jac(x)
-                resid = yv .- F
+                F, Kfull, νout = forward_jac(x)
+                K     = Kfull[kidx, :]
+                resid = yv_k .- @view F[kidx]
                 Sei_r = Se_fac \ resid
                 J = J_try
                 push!(cost_hist, J)
@@ -228,12 +262,35 @@ function optimal_estimation(y::AbstractVector{<:Real},
     ld, _  = logabsdet(I - A)
     H      = -0.5 * ld / log(2.0)
     # Error budget: retrieval noise Sᵣ = G Sₑ Gᵀ, smoothing Sₛ = (I−A) Sₐ (I−A)ᵀ.
-    S_noise     = Matrix(Symmetric(G * (Se * G')))
+    # G maps only the kept channels, so the noise term uses the kept sub-block `Se_k`.
+    S_noise     = Matrix(Symmetric(G * (Se_k * G')))
     ImA         = I - A
     S_smoothing = Matrix(Symmetric(ImA * (Sa * ImA')))
     chi2   = resid' * (Se_fac \ resid)
 
+    # `Kfull`/`F`/`νout` are full-grid; `G`/`A`/covariances are over the kept channels.
     return RetrievalResult(x, spec, converged, iter, cost_hist,
-                           S_hat, A, G, K, dof, dfn, H, S_noise, S_smoothing,
-                           chi2, F, νout)
+                           S_hat, A, G, Kfull, dof, dfn, H, S_noise, S_smoothing,
+                           chi2, F, νout, keep)
+end
+
+"""
+    exclude_channels(ν, ranges...) -> Vector{Bool}
+
+Build a keep-mask (`true` = use in the retrieval) for `optimal_estimation`'s
+`channel_mask` that **drops** every channel whose wavenumber `ν` falls inside any of the
+closed intervals `ranges`, each given as a `(lo, hi)` tuple in cm⁻¹.
+
+```julia
+# Blacklist the CO₂ ν₂ Q-branches at 15 µm before retrieving.
+mask = exclude_channels(ν, (719.0, 723.0), (665.0, 668.0))
+optimal_estimation(y, spec, base, linelists; xa, Sa, Se, channel_mask=mask)
+```
+"""
+function exclude_channels(ν::AbstractVector{<:Real}, ranges::Tuple{<:Real,<:Real}...)
+    keep = trues(length(ν))
+    for (lo, hi) in ranges
+        keep .&= .!((ν .>= lo) .& (ν .<= hi))
+    end
+    return keep
 end
