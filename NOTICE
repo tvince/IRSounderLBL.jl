@@ -1,0 +1,59 @@
+IRSounderLBL.jl
+Copyright (c) 2026 Tony Vincent
+
+This product's SOURCE CODE is licensed under the MIT License; see the LICENSE
+file. The MIT License applies to the software only. It does NOT extend to the
+third-party scientific reference data the package reads at runtime, which is
+governed by the separate terms of its respective providers, summarized below.
+
+Nothing in the MIT LICENSE should be read as granting any right in, or
+relicensing, the data described here.
+
+================================================================================
+THIRD-PARTY DATA — PROVENANCE AND TERMS
+================================================================================
+
+Spectroscopic and atmospheric reference data are obtained from external
+databases. Each carries its provider's own usage and citation obligations,
+which the end user is responsible for meeting when running the package.
+
+1. HITRAN line lists and Collision-Induced Absorption (CIA)
+   Provider : HITRAN database, hitran.org
+   Files    : *.par line lists; data/cia/*.cia
+   Terms    : HITRAN data are provided for the user's own use under HITRAN's
+              data-use policy and do NOT carry a redistribution license. Users
+              must obtain these files themselves from hitran.org and cite the
+              current HITRAN edition. This package does not grant any right to
+              redistribute HITRAN data.
+   Cite     : Gordon et al., JQSRT 277, 107949 (2022) — HITRAN2020.
+              Karman et al., Icarus 328, 160–175 (2019) — CIA.
+   See      : data/cia/SOURCE.md
+
+2. TIPS-2024 total internal partition sums
+   Provider : R. R. Gamache et al. (HITRAN partition functions)
+   Cite     : Gamache et al., JQSRT 345, 109509 (2025).
+
+3. MT-CKD continuum (H2O and CO2 coefficient tables)
+   Provider : Atmospheric and Environmental Research (AER), AER-RC/MT_CKD
+   Files    : data/mt_ckd_h2o/mt_ckd43_h2o_coeffs.csv;
+              data/mt_ckd_co2/mt_ckd_co2_coeffs.csv
+   Terms    : AER MT_CKD is open-source and redistributable with attribution
+              and its copyright notice retained.
+   Cite     : Mlawer et al., Phil. Trans. R. Soc. A 370, 2520–2556 (2012).
+
+4. AFGL standard atmospheres
+   Provider : Air Force Geophysics Laboratory reference atmospheres
+   Files    : data/afgl_*_50lev.csv
+   Terms    : Public reference profiles, freely redistributable.
+   Cite     : Anderson et al., AFGL-TR-86-0110 (1986).
+
+5. CO2 line-mixing relaxation data
+   Provider : Lamouroux / Hartmann et al. (HITRAN2020 line-mixing package)
+   Cite     : Lamouroux et al., JQSRT 151, 88–96 (2015);
+              Hartmann et al., JQSRT 110, 2019–2026 (2009).
+
+================================================================================
+Users are solely responsible for holding the appropriate access to, and for
+meeting the citation and redistribution terms of, any data they supply to this
+package. When in doubt, consult the provider's website.
+================================================================================

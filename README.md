@@ -98,10 +98,38 @@ scripts/           validation drivers, ARTS comparison, plotting
 
 - HITRAN 2020 — Gordon et al., JQSRT 277 (2022)
 - TIPS-2024 v1.2 — Gamache et al., JQSRT 345 (2025)
-- MT-CKD 4.3 — Mlawer et al. (AER); data files under `data/mtckd/`
+- MT-CKD 4.3 — Mlawer et al. (AER); data files under `data/mt_ckd_h2o/` and `data/mt_ckd_co2/`
 - Niro line mixing — Niro et al., JQSRT 88 (2004)
 - Norton-Beer apodization — Norton & Beer, JOSA 66 (1976)
 
+## Data and third-party licenses
+
+The MIT license below covers the **software only**. It does not extend to the
+spectroscopic and atmospheric reference data the package reads at runtime, each
+of which carries its provider's own usage and citation terms. See the
+[`NOTICE`](NOTICE) file for the full breakdown; the short version:
+
+| Data | Source | Redistribution | You must cite |
+|---|---|---|---|
+| Line lists (`*.par`), CIA (`*.cia`) | [HITRAN](https://hitran.org) | **No** — fetch it yourself | HITRAN2020; Karman et al. 2019 |
+| TIPS-2024 partition sums | Gamache et al. | with attribution | Gamache et al. 2025 |
+| MT-CKD continuum tables | AER ([MT_CKD](https://github.com/AER-RC/MT_CKD)) | with attribution | Mlawer et al. 2012 |
+| AFGL standard atmospheres | AFGL | freely | Anderson et al. 1986 |
+| CO₂ line-mixing data | Lamouroux/Hartmann | with attribution | Lamouroux et al. 2015 |
+
+**HITRAN data is not redistributable** and you are responsible for obtaining it
+from hitran.org under HITRAN's data-use policy and for meeting its citation
+requirement. See [`data/cia/SOURCE.md`](data/cia/SOURCE.md) for the exact files
+and download steps.
+
+## Citing this software
+
+If you use IRSounderLBL.jl in published work, please cite it via the
+[`CITATION.cff`](CITATION.cff) file (GitHub's "Cite this repository" button), in
+addition to the underlying data sources above.
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Applies to the source code only; see
+[Data and third-party licenses](#data-and-third-party-licenses) above and
+[`NOTICE`](NOTICE) for data terms.

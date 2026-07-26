@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "261488c9e8174722c0ad06e496308115375749fa"
+project_hash = "43657ab3afa5fc60b002beb360ae5402b05b4c6a"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -507,9 +507,9 @@ uuid = "e33a78d0-f292-5ffc-b300-72abe9b543c8"
 version = "2.13.0+1"
 
 [[deps.IRSounderLBL]]
-deps = ["CUDA", "Downloads", "HDF5", "Interpolations", "JLD2", "JSON3", "KernelAbstractions", "LinearAlgebra", "Metal", "Plots", "Preferences", "ProgressMeter", "Scratch", "SpecialFunctions", "Tullio", "Unitful"]
+deps = ["CUDA", "Downloads", "FFTW", "HDF5", "Interpolations", "JLD2", "JSON3", "KernelAbstractions", "LinearAlgebra", "Metal", "Plots", "Preferences", "ProgressMeter", "Scratch", "SpecialFunctions", "Tullio", "Unitful"]
 path = "."
-uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+uuid = "382fb126-c9cc-40b0-a4a6-0504c6dc0b4b"
 version = "0.1.0"
 
 [[deps.IntelOpenMP_jll]]
