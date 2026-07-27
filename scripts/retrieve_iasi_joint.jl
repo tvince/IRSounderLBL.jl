@@ -39,6 +39,12 @@ const BASETAG   = BASE_ATM == :us_standard ? "" : "_$(BASE_ATM)"
 const QMASK_SPEC = get(ENV, "JOINT_QMASK", "")
 const QTAG       = isempty(QMASK_SPEC) ? "" : "_qmask"
 const TARGET_DFS = 1.0                     # ≈ one DOF per H2O bulk layer
+# Optional: use the EUMETSAT IASI L1C Noise Covariance Matrix (NCM) as Sₑ instead of
+# the analytic scene covariance from the baseline jld2. Set IASI_NCM=/path/to/*.nc.
+const NCM_PATH   = get(ENV, "IASI_NCM", "")
+const NCMTAG     = isempty(NCM_PATH) ? "" : "_ncm"
+# Internal monochromatic grid spacing (cm⁻¹); JOINT_DNU overrides the 0.0025 default.
+const INTERNAL_DNU = parse(Float64, get(ENV, "JOINT_DNU", "0.0025"))
 const BASELINE  = "data/iasi_profile_retrieval.jld2"
 const PRIOR_O3  = "data/iasi_profile_o3.jld2"   # VP_Y lm=5, +O3 (FIXED VMR), T-only (key rC)
 const GRANULE   = "data/iasi_l1c/IASI_xxx_1C_M03_20260609152958Z_20260609153253Z_N_O_20260609165144Z__20260609165227"
@@ -52,8 +58,20 @@ prog(msg) = (@printf("[%7.1fs] %s\n", time() - T0, msg); flush(stdout))
 # ── Inputs ────────────────────────────────────────────────────────────────────────
 prog("Loading baseline y / Se …")
 bl = load(BASELINE)
-νobs = bl["ν"]; y = bl["y"]; Se = bl["Se"]
-@printf("  %d channels\n", length(y)); flush(stdout)
+νobs = bl["ν"]; y = bl["y"]
+if isempty(NCM_PATH)
+    Se = bl["Se"]                         # analytic apodized scene covariance
+    @printf("  %d channels; Sₑ = analytic scene covariance\n", length(y)); flush(stdout)
+else
+    isfile(NCM_PATH) || error("IASI_NCM file not found: $(NCM_PATH)")
+    prog("Building Sₑ from EUMETSAT NCM $(basename(NCM_PATH)) …")
+    nc = to_bt(subset_channels(read_iasi_ncm(NCM_PATH; ν_window=(ν_LO, ν_HI)), νobs), y)
+    Se = measurement_covariance(nc)       # radiance NCM → BT-space Sₑ at the scene
+    σ_ncm = sqrt.([nc.cov[i,i] for i in eachindex(νobs)])
+    @printf("  %d channels; Sₑ = EUMETSAT NCM → BT σ %.3f…%.3f K (median %.3f), corr %.3f\n",
+            length(y), minimum(σ_ncm), maximum(σ_ncm), sort(σ_ncm)[cld(length(σ_ncm),2)],
+            nc.cov[1,2]/sqrt(nc.cov[1,1]*nc.cov[2,2])); flush(stdout)
+end
 
 # Build the optional channel blacklist from JOINT_QMASK.
 _parse_ranges(s) = isempty(s) ? Tuple{Float64,Float64}[] :
@@ -99,8 +117,8 @@ _, ychk = measurement(g, ifov)
 nchan = round(Int, (ν_HI - ν_LO)/0.25) + 1
 iasi  = IASIInstrument(ν_LO, ν_HI, 0.25, nchan, 2.0, 0.5)
 geom  = ViewingGeometry(g.zen[ifov])
-fm = (iasi=iasi, geom=geom, with_ils=true, apodization=:gaussian,
-      apply_continuum=true, internal_dnu=0.0025, line_mixing=lm, lm_cutoff=LM_CUTOFF)
+fm = (sounder=iasi, geom=geom, with_ils=true, apodization=:gaussian,
+      apply_continuum=true, internal_dnu=INTERNAL_DNU, line_mixing=lm, lm_cutoff=LM_CUTOFF)
 
 # ── Pilot: linear DFS estimate for H2O (one Jacobian at the prior, no iteration) ─────
 # Retrieve H2O at FULL resolution *only* to measure where the information is. The
@@ -200,12 +218,12 @@ end
 
 # ── Dump ────────────────────────────────────────────────────────────────────────────
 nedt = sqrt.(diag(Se))
-open("data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)$(QTAG)_fit.csv", "w") do io
+open("data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)$(QTAG)$(NCMTAG)_fit.csv", "w") do io
     println(io, "wavenumber_cm-1,bt_obs_K,res_prior_K,res_joint_K,nedt_K")
     for i in eachindex(νobs)
         @printf(io, "%.4f,%.4f,%.4f,%.4f,%.4f\n", νobs[i], y[i], dPrior.res[i], dJ.res[i], nedt[i])
     end
 end
-jldsave("data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)$(QTAG).jld2"; rJ=rJ, ν=νobs, y=y, blocks=blocks,
+jldsave("data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)$(QTAG)$(NCMTAG).jld2"; rJ=rJ, ν=νobs, y=y, blocks=blocks,
         dfs_h2o=dfs_h2o, o3_scale=o3_scale, h2o_scales=h2o_scales)
 prog("wrote data/iasi_joint$(TAG)$(O3TAG)$(BASETAG)$(QTAG)_{fit.csv,jld2}")

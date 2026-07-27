@@ -34,7 +34,8 @@ include("Solver/schwarzschild_jacobian.jl")
 include("Sensor/geometry.jl")
 include("Sensor/ils.jl")
 include("Sensor/ils_fft.jl")
-include("Sensor/iasi.jl")
+include("Sensor/sounder.jl")
+include("Sensor/noise_covariance.jl")
 include("Sensor/iasi_l1c.jl")
 
 # Parallel
@@ -92,10 +93,15 @@ export schwarzschild_rte, schwarzschild_rte_jacobian
 export ViewingGeometry, airmass_factor
 export nadir_geometry, iasi_scan_angles
 export scan_angle_to_local_zenith, iasi_zenith_angles
-export IASIInstrument, iasi_grid
+export Sounder, sounder_grid
+export IASIInstrument, IASINGInstrument, CrISInstrument, MTGIRSInstrument
+export iasi_grid   # deprecated alias for sounder_grid
 export ils_kernel, apply_ils, apply_ils_fft, ILSConvolver, ils_apply!
 export NORTON_BEER_COEFFS, norton_beer_apodization
-export iasi_forward_model
+export forward_model
+export iasi_forward_model   # deprecated alias for forward_model
+export SounderNoiseCovariance, read_iasi_ncm, load_noise_covariance
+export measurement_covariance, subset_channels, to_bt
 export read_iasi_l1c, IASIL1CGranule, nfov, measurement, cloud_fraction, solar_reflection_angle
 
 # Parallel exports

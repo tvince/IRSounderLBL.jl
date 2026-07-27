@@ -152,7 +152,8 @@ configuration mirrors `iasi_forward_model` and is run with the cutoff-freezing p
 function analytic_jacobian(prof::AtmosphericProfile,
                            linelists::Dict{GasSpecies, HITRANLinelist},
                            spec::StateVectorSpec;
-                           iasi::IASIInstrument  = IASIInstrument(),
+                           sounder::Union{Sounder, Nothing} = nothing,
+                           iasi::Sounder         = IASIInstrument(),
                            geom::ViewingGeometry = nadir_geometry(),
                            T_sfc::Union{Float64, Nothing} = nothing,
                            ε_sfc::Float64        = 1.0,
@@ -172,6 +173,8 @@ function analytic_jacobian(prof::AtmosphericProfile,
                            backend               = CPU())::Jacobian
     observable in (:bt, :radiance) ||
         error("observable must be :bt or :radiance, got :$observable")
+    # Generic `sounder=` kwarg (mirrors `forward_model`); `iasi=` kept for back-compat.
+    iasi = sounder === nothing ? iasi : sounder
     need_T = spec.include_temperature
     # VMR coupling (∂σ/∂{p,T,vmr_self}·∂{p_cg,T_cg,vmr_self}/∂VMR) and the temperature
     # opacity term both go through `_species_cross_section_grad`, which is line-mixing
