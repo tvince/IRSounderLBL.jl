@@ -98,7 +98,7 @@ end
                        method=:levenberg_marquardt,
                        max_iter=15, max_linesearch=8,
                        γ0=1.0, γ_factor=3.0, γ_min=1e-4,
-                       conv_factor=1e-2, observable=:bt,
+                       conv_factor=1e-1, observable=:bt,
                        fm_kwargs=(;), verbose=false) -> RetrievalResult
 
 Retrieve the state `x` from the observed spectrum `y` by optimal estimation.
@@ -121,7 +121,10 @@ Retrieve the state `x` from the observed spectrum `y` by optimal estimation.
   state (default `1.0`, a blackbody surface). Set e.g. `0.98` for a sea surface. When
   ε *is* retrieved (`spec.include_emissivity`), the state value is used and this is
   ignored.
-- convergence: stop when the Rodgers step size `dᵢ² = Δxᵀ Ŝ⁻¹ Δx < conv_factor·n`.
+- convergence: stop when the per-parameter Rodgers step size
+  `dᵢ²/n = (Δxᵀ Ŝ⁻¹ Δx)/n < conv_factor` (n = state dimension), so `conv_factor`
+  means the same thing regardless of how many parameters are retrieved. Reported
+  as `d²/n` in the verbose iteration log.
 
 `fm_kwargs` is forwarded to both `analytic_jacobian` (for `K`) and `iasi_forward_model`
 (for the line-search `F`, with `dptmn=0`); pass forward-model options (`iasi`,
@@ -143,7 +146,7 @@ function optimal_estimation(y::AbstractVector{<:Real},
                             γ0::Float64 = 1.0,
                             γ_factor::Float64 = 3.0,
                             γ_min::Float64 = 1e-4,
-                            conv_factor::Float64 = 1e-2,
+                            conv_factor::Float64 = 1e-1,
                             observable::Symbol = :bt,
                             ε_fixed::Float64 = 1.0,
                             fm_kwargs = (;),
@@ -228,7 +231,10 @@ function optimal_estimation(y::AbstractVector{<:Real},
 
             if J_try < J
                 # Rodgers step-size convergence test dᵢ² = Δxᵀ Ŝ⁻¹ Δx.
+                # Report and test the per-parameter form d²/n so the metric is
+                # directly comparable to conv_factor across state dimensions.
                 d2 = Δx' * (Sa_inv * Δx .+ KtSeiK * Δx)
+                d2n = d2 / n
                 x = x_try
                 F, Kfull, νout = forward_jac(x)
                 K     = Kfull[kidx, :]
@@ -238,8 +244,18 @@ function optimal_estimation(y::AbstractVector{<:Real},
                 push!(cost_hist, J)
                 method === :gauss_newton || (γ = max(γ / γ_factor, γ_min))
                 accepted = true
-                verbose && (println("  iter $iter: J=$(round(J,sigdigits=6)) d²=$(round(d2,sigdigits=3)) γ=$γ"); flush(stdout))
-                d2 < conv_factor * n && (converged = true)
+                if verbose
+                    # a-posteriori noise-consistency diagnostic ŝ = χ²_obs / (m − tr A),
+                    # the ML scale for Sₑ: ŝ≈1 ⇒ Sₑ consistent; ŝ≫1 ⇒ Sₑ UNDER-represents
+                    # the error (too tight — inflate); ŝ<1 ⇒ OVER-represents (too loose).
+                    # m = # kept channels, tr A = DOF-for-signal at the new state.
+                    KtSeiK_n = Symmetric(K' * (Se_fac \ K))
+                    trA  = tr((Matrix(Sa_inv) .+ Matrix(KtSeiK_n)) \ Matrix(KtSeiK_n))
+                    shat = (resid' * Sei_r) / (length(resid) - trA)
+                    println("  iter $iter: J=$(round(J,sigdigits=6)) d²/n=$(round(d2n,sigdigits=3)) " *
+                            "ŝ=$(round(shat,sigdigits=3)) γ=$γ"); flush(stdout)
+                end
+                d2n < conv_factor && (converged = true)
                 break
             else
                 method === :gauss_newton && break   # no damping to fall back on
