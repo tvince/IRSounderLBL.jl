@@ -1,8 +1,17 @@
 using Test
 using IRSounderLBL
 using LinearAlgebra
+using Aqua
 
 @testset "IRSounderLBL.jl" begin
+
+    # ── Aqua.jl package-quality checks ────────────────────────────────────
+    @testset "Aqua quality" begin
+        # ambiguities across the dep tree are noisy and largely out of our
+        # control; the rest (stale deps, compat bounds, exports, piracy, the
+        # weakdep/extension wiring) are what we want enforced.
+        Aqua.test_all(IRSounderLBL; ambiguities = false)
+    end
 
     # ── WavenumberGrid ────────────────────────────────────────────────────
     @testset "WavenumberGrid" begin

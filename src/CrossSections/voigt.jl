@@ -1,5 +1,4 @@
 using KernelAbstractions
-using Metal
 using SpecialFunctions: erfcx
 
 const _SQRT_LN2    = sqrt(log(2.0))
@@ -12,6 +11,11 @@ const _INV_SQRT_PI = inv(sqrt(π))
 # f4fn = S·γ_L/(π(γ_L²+Δν²)). Threshold is in x-units so it auto-scales per line
 # via f=√ln2/γ_D (≈0.3 cm⁻¹ from center at 4.3µm, ≈0.08 cm⁻¹ at 15µm).
 const _X_FAR = 122.0
+
+# Floating-point type used to evaluate the Voigt profile on a given KernelAbstractions
+# backend. CPU and CUDA support Float64; Apple Metal is Float32-only, so the Metal
+# package extension overrides this for `Metal.MetalBackend`.
+_backend_float_type(backend) = Float64
 
 """
     VoigtMethod
@@ -378,7 +382,9 @@ function compute_voigt_cross_sections(ν_grid::WavenumberGrid,
                                        method::VoigtMethod = FullFaddeeva,
                                        x_far::Float64 = _X_FAR)
     # Metal (Apple Silicon) does not support Float64 — use Float32 automatically.
-    FT = (backend isa Metal.MetalBackend) ? Float32 : Float64
+    # `_backend_float_type` defaults to Float64; the Metal package extension
+    # (ext/IRSounderLBLMetalExt.jl) overrides it to Float32 for a MetalBackend.
+    FT = _backend_float_type(backend)
     (method == FullFaddeeva && FT === Float32) &&
         error("FullFaddeeva uses complex erfcx (Float64/CPU only); use Weideman on a Metal backend.")
 

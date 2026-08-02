@@ -72,49 +72,22 @@ function ka_backend(cb::ComputeBackend)
     end
 end
 
+# ── GPU extension hooks ──────────────────────────────────────────────────────
+# Metal and CUDA are optional weak dependencies. Loading either (`using Metal` /
+# `using CUDA`) activates a package extension that overrides these hooks with the
+# real implementations. Without the extension the defaults report "no GPU", so the
+# package works with GPU deps absent. `Val(:metal)` / `Val(:cuda)` select backend.
+_gpu_functional(::Val)  = false
+_gpu_cores(::Val)       = 0
+_gpu_ka_backend(::Val)  = CPU()
+
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
-function _check_metal()
-    try
-        # Metal.jl is an extension dep; check without importing at load time
-        return isdefined(Main, :Metal) && Main.Metal.functional()
-    catch
-        return false
-    end
-end
-
-function _check_cuda()
-    try
-        return isdefined(Main, :CUDA) && Main.CUDA.functional()
-    catch
-        return false
-    end
-end
-
-function _cuda_cores()
-    try
-        dev = Main.CUDA.device()
-        return Main.CUDA.attribute(dev, Main.CUDA.DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT) * 128
-    catch
-        return 0
-    end
-end
-
-function _metal_backend()
-    try
-        return Main.Metal.MetalBackend()
-    catch
-        return CPU()
-    end
-end
-
-function _cuda_backend()
-    try
-        return Main.CUDA.CUDABackend()
-    catch
-        return CPU()
-    end
-end
+_check_metal()   = _gpu_functional(Val(:metal))
+_check_cuda()    = _gpu_functional(Val(:cuda))
+_cuda_cores()    = _gpu_cores(Val(:cuda))
+_metal_backend() = _gpu_ka_backend(Val(:metal))
+_cuda_backend()  = _gpu_ka_backend(Val(:cuda))
 
 Base.show(io::IO, cb::ComputeBackend) =
     print(io, "ComputeBackend(gpu=$(cb.use_gpu), backend=:$(cb.gpu_backend), " *

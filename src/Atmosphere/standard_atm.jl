@@ -245,8 +245,13 @@ function _read_afgl_50lev(path::String)
     return AtmosphericProfile(p, T, z, vmr)
 end
 
+# Default location of the bundled AFGL CSVs, resolved relative to this source file
+# (like the continuum tables in continuum.jl) so it is independent of the process
+# working directory — e.g. under `Pkg.test()`, whose sandbox CWD is not the repo root.
+const _AFGL_DATA_DIR = normpath(joinpath(@__DIR__, "..", "..", "data"))
+
 """
-    afgl_atmosphere(name; data_dir="data") -> AtmosphericProfile
+    afgl_atmosphere(name; data_dir=<pkg>/data) -> AtmosphericProfile
 
 Return one of the six AFGL (1986) model atmospheres on 50 pressure levels
 (0–120 km). `name` is a `Symbol` or `String`, one of $(AFGL_ATMOSPHERES).
@@ -257,7 +262,7 @@ the climate zone matching the scene (e.g. `:tropical` for a warm marine FOV).
 Data source: ARTS XML data repository (Anderson et al. 1986, AFGL-TR-86-0110).
 Generate the CSVs with scripts/build_afgl_atmospheres.py.
 """
-function afgl_atmosphere(name::Symbol; data_dir::String = "data")
+function afgl_atmosphere(name::Symbol; data_dir::String = _AFGL_DATA_DIR)
     name in AFGL_ATMOSPHERES ||
         error("Unknown AFGL atmosphere :$name. Choose one of $(AFGL_ATMOSPHERES).")
     return _read_afgl_50lev(joinpath(data_dir, "afgl_$(name)_50lev.csv"))
@@ -266,32 +271,32 @@ afgl_atmosphere(name::AbstractString; kwargs...) =
     afgl_atmosphere(Symbol(replace(name, '-' => '_')); kwargs...)
 
 """
-    afgl_us_standard_50lev(; data_dir="data")
+    afgl_us_standard_50lev(; data_dir=<pkg>/data)
 
 AFGL US Standard Atmosphere on 50 pressure levels (0–120 km). Extends the
 standard 43-level profile into the mesosphere and lower thermosphere, required
 for correct RT in optically thick bands such as CO₂ 4.3 µm. See
 [`afgl_atmosphere`](@ref) for the other five climate zones.
 """
-afgl_us_standard_50lev(; data_dir::String = "data") =
+afgl_us_standard_50lev(; data_dir::String = _AFGL_DATA_DIR) =
     afgl_atmosphere(:us_standard; data_dir=data_dir)
 
 "AFGL Tropical model atmosphere, 50-level. See [`afgl_atmosphere`](@ref)."
-afgl_tropical_50lev(; data_dir::String = "data") =
+afgl_tropical_50lev(; data_dir::String = _AFGL_DATA_DIR) =
     afgl_atmosphere(:tropical; data_dir=data_dir)
 
 "AFGL Midlatitude Summer model atmosphere, 50-level. See [`afgl_atmosphere`](@ref)."
-afgl_midlatitude_summer_50lev(; data_dir::String = "data") =
+afgl_midlatitude_summer_50lev(; data_dir::String = _AFGL_DATA_DIR) =
     afgl_atmosphere(:midlatitude_summer; data_dir=data_dir)
 
 "AFGL Midlatitude Winter model atmosphere, 50-level. See [`afgl_atmosphere`](@ref)."
-afgl_midlatitude_winter_50lev(; data_dir::String = "data") =
+afgl_midlatitude_winter_50lev(; data_dir::String = _AFGL_DATA_DIR) =
     afgl_atmosphere(:midlatitude_winter; data_dir=data_dir)
 
 "AFGL Subarctic Summer model atmosphere, 50-level. See [`afgl_atmosphere`](@ref)."
-afgl_subarctic_summer_50lev(; data_dir::String = "data") =
+afgl_subarctic_summer_50lev(; data_dir::String = _AFGL_DATA_DIR) =
     afgl_atmosphere(:subarctic_summer; data_dir=data_dir)
 
 "AFGL Subarctic Winter model atmosphere, 50-level. See [`afgl_atmosphere`](@ref)."
-afgl_subarctic_winter_50lev(; data_dir::String = "data") =
+afgl_subarctic_winter_50lev(; data_dir::String = _AFGL_DATA_DIR) =
     afgl_atmosphere(:subarctic_winter; data_dir=data_dir)
