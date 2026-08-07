@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "b28f5ac1c6c1a624dafe28ee7deda29694003628"
+project_hash = "9612abd2defebb786356b91035449163775f685d"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -185,7 +185,7 @@ uuid = "e33a78d0-f292-5ffc-b300-72abe9b543c8"
 version = "2.13.0+1"
 
 [[deps.IRSounderLBL]]
-deps = ["Downloads", "FFTW", "HDF5", "Interpolations", "JLD2", "JSON3", "KernelAbstractions", "LinearAlgebra", "Preferences", "ProgressMeter", "SHA", "Scratch", "SpecialFunctions"]
+deps = ["Dates", "Downloads", "FFTW", "HDF5", "Interpolations", "JLD2", "JSON3", "KernelAbstractions", "LinearAlgebra", "Preferences", "ProgressMeter", "SHA", "Scratch", "SpecialFunctions"]
 path = "."
 uuid = "382fb126-c9cc-40b0-a4a6-0504c6dc0b4b"
 version = "0.1.0"

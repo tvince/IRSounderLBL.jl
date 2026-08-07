@@ -51,7 +51,50 @@ const _HITRAN_CIA_NOTE =
     "doi:10.1016/j.icarus.2019.02.034, and the current HITRAN edition."
 
 """
+    ManualDataset
+
+Data this package cannot fetch for you — the source is behind an account, or the
+selection is scene-specific. [`data_status`](@ref) reports these so a missing
+prerequisite shows up as an instruction rather than as a confusing failure later.
+`probe` is a path (file or directory) whose presence means "you have it".
+"""
+struct ManualDataset
+    name::String
+    probe::String
+    url::String
+    needs_account::Bool
+    used_for::String
+end
+
+"""
+Account-gated or scene-specific data, reported by [`data_status`](@ref) but never
+downloaded automatically.
+"""
+const MANUAL_DATASETS = ManualDataset[
+    ManualDataset("CO₂ line-mixing (HITRAN2020)",
+                  joinpath("Line-mixing_HITRAN2020", "data_new"),
+                  "https://hitran.org/supplementary/ → Line-Mixing → https://hitran.org/files/LM/",
+                  true,
+                  "VPYLineMixing / VPWLineMixing. Take the HITRAN2020 package, not 2016. " *
+                  "~430 MB. See data/Line-mixing_HITRAN2020/SOURCE.md"),
+    ManualDataset("IASI L1C granules",
+                  "iasi_l1c",
+                  "https://www.class.noaa.gov/",
+                  true,
+                  "read_iasi_l1c — real-radiance retrievals. Scene-specific: pick your own granules."),
+    ManualDataset("EUMETSAT IASI noise covariance (NCM)",
+                  "ncm",
+                  "https://data.eumetsat.int/",
+                  true,
+                  "read_iasi_ncm — host instrument noise covariance as retrieval Se."),
+]
+
+"""
 Downloadable datasets, keyed by group. Pass a key to [`download_data`](@ref).
+
+`:cia` is fixed files with pinned checksums. `:linelists` is a HITRAN API query —
+it needs `HITRAN_API_KEY` and is handled by [`download_linelists`](@ref), so it has
+no entry here.
 """
 const DATASETS = Dict{Symbol,Vector{DataFile}}(
     :cia => [
@@ -146,6 +189,20 @@ function find_data_file(relpath::AbstractString)
     for root in data_search_path()
         p = joinpath(root, relpath)
         isfile(p) && return p
+    end
+    return nothing
+end
+
+"""
+    find_data_path(relpath) -> Union{String,Nothing}
+
+Like [`find_data_file`](@ref) but matches a file *or* a directory — used for the
+bulk data drops in [`MANUAL_DATASETS`](@ref), which are directories.
+"""
+function find_data_path(relpath::AbstractString)
+    for root in data_search_path()
+        p = joinpath(root, relpath)
+        ispath(p) && return p
     end
     return nothing
 end
@@ -251,8 +308,15 @@ and only then moved into place, so an interrupted or corrupted download can neve
 masquerade as a good file. Files already present anywhere on
 [`data_search_path`](@ref) are skipped unless `force=true`.
 
-`datasets` selects groups from [`DATASETS`](@ref) (currently `:cia`, the HITRAN
-collision-induced-absorption tables).
+`datasets` selects what to fetch:
+
+- `:cia` — HITRAN collision-induced-absorption tables. No key needed. **Default.**
+- `:linelists` — HITRAN line lists via the LBL API. Needs `ENV["HITRAN_API_KEY"]`;
+  extra keyword arguments (`ν_min`, `ν_max`, `species`) are forwarded to
+  [`download_linelists`](@ref). Not included by default, since it needs that key.
+
+Run [`data_status`](@ref) for a checklist of what is present, what is missing, and
+what has to be downloaded by hand.
 
 !!! note "Third-party terms"
     Downloaded data carries its provider's license, not this package's. The
@@ -269,16 +333,24 @@ data_status()            # show what is present and where
 function download_data(datasets = keys(DATASETS);
                        dir::AbstractString = data_download_dir(),
                        force::Bool = false,
-                       verbose::Bool = true)
+                       verbose::Bool = true,
+                       linelist_kwargs...)
     keys_ = datasets isa Symbol ? [datasets] : collect(datasets)
     for k in keys_
-        haskey(DATASETS, k) ||
+        (haskey(DATASETS, k) || k === :linelists) ||
             error("Unknown dataset :$k. Available: " *
-                  join(sort(string.(collect(keys(DATASETS)))), ", "))
+                  join(sort(vcat(string.(collect(keys(DATASETS))), "linelists")), ", "))
     end
 
     mkpath(dir)
     nfetched = 0
+
+    # Line lists are an API query, not fixed files — separate path, needs a key.
+    if :linelists in keys_
+        download_linelists(; dir, force, verbose, linelist_kwargs...)
+        keys_ = filter(!=(:linelists), keys_)
+    end
+
     for k in keys_, f in DATASETS[k]
         dest = joinpath(dir, f.relpath)
         if !force
@@ -334,28 +406,95 @@ end
 """
     data_status(io = stdout)
 
-Print where each managed data file was found (or that it is missing, with the
-provider's terms), plus the active search path.
+Print a setup checklist: what data is present, what is missing, and the exact next
+step for each gap. Covers the bundled tables, the automatic downloads, and the
+account-gated sources this package cannot fetch for you ([`MANUAL_DATASETS`](@ref)).
+
+This is the intended starting point on a fresh install — `using IRSounderLBL;
+data_status()` should answer "what do I still need?" without reading any docs.
 """
 function data_status(io::IO = stdout)
-    println(io, "Data search path (first match wins):")
+    mark(ok) = ok ? "  ✓ " : "  ✗ "
+    todo = String[]
+
+    println(io, "IRSounderLBL data status")
+    println(io, "="^62)
+
+    # ── Tier 0: bundled ──────────────────────────────────────────────────────
+    println(io, "\nBUNDLED (ships with the package, no setup)")
+    for (label, rel) in ("AFGL reference atmospheres" => "afgl_us_standard_50lev.csv",
+                         "MT-CKD H₂O continuum"       => joinpath("mt_ckd_h2o", "mt_ckd43_h2o_coeffs.csv"),
+                         "MT-CKD CO₂ continuum"       => joinpath("mt_ckd_co2", "mt_ckd_co2_coeffs.csv"))
+        found = find_data_file(rel)
+        println(io, mark(!isnothing(found)), label)
+        isnothing(found) &&
+            push!(todo, "(bundled file missing: $rel — reinstall the package)")
+    end
+
+    # ── Tier 1: automatic downloads ──────────────────────────────────────────
+    println(io, "\nAUTOMATIC DOWNLOAD  (download_data())")
+    for k in sort(collect(keys(DATASETS)))
+        for f in DATASETS[k]
+            path = find_data_file(f.relpath)
+            println(io, mark(!isnothing(path)), f.relpath,
+                    isnothing(path) ? "" : "  → $path")
+        end
+        if !all(!isnothing(find_data_file(f.relpath)) for f in DATASETS[k])
+            push!(todo, "julia> download_data(:$k)")
+        end
+        for (provider, note) in unique((f.provider, f.note) for f in DATASETS[k])
+            println(io, "      $provider — $note")
+        end
+    end
+
+    # ── Tier 2: line lists (API key) ─────────────────────────────────────────
+    println(io, "\nLINE LISTS  (download_data(:linelists) — needs a free HITRAN API key)")
+    haskey = hitran_api_key_available()
+    println(io, mark(haskey), "HITRAN_API_KEY ",
+            haskey ? "is set" : "NOT set — register free at https://hitran.org/register/")
+    nfound = 0
+    ntotal = 0
+    for (sp, isos) in LINELIST_DEFAULT_SPECIES, iso in isos
+        ntotal += 1
+        rel = _linelist_file(linelist_base(sp), iso)
+        isnothing(find_data_file(rel)) || (nfound += 1)
+    end
+    println(io, mark(nfound == ntotal),
+            "default 15 µm set (CO₂ iso 1–4, H₂O iso 1–3, ",
+            Int(LINELIST_DEFAULT_ν[1]), "–", Int(LINELIST_DEFAULT_ν[2]), " cm⁻¹): ",
+            nfound, "/", ntotal, " files")
+    if nfound < ntotal
+        haskey || push!(todo, "shell> export HITRAN_API_KEY=<your key>   " *
+                              "# free: https://hitran.org/register/")
+        push!(todo, "julia> download_data(:linelists)")
+    end
+    println(io, "      Without a line list the forward model cannot run.")
+
+    # ── Tier 3: manual ───────────────────────────────────────────────────────
+    println(io, "\nMANUAL  (account-gated or scene-specific — cannot be fetched for you)")
+    for m in MANUAL_DATASETS
+        path = find_data_path(m.probe)
+        println(io, mark(!isnothing(path)), m.name, isnothing(path) ? "" : "  → $path")
+        if isnothing(path)
+            println(io, "      get it: ", m.url, m.needs_account ? "   (free account required)" : "")
+        end
+        println(io, "      ", m.used_for)
+    end
+
+    # ── What to do next ──────────────────────────────────────────────────────
+    println(io, "\n", "="^62)
+    if isempty(todo)
+        println(io, "All automatic data present. Optional manual sets are listed above.")
+    else
+        println(io, "NEXT STEPS:")
+        for t in unique(todo)
+            println(io, "  ", t)
+        end
+    end
+    println(io, "\nSearch path (first match wins):")
     for (i, root) in enumerate(data_search_path())
         println(io, "  $i. $root", isdir(root) ? "" : "   (does not exist)")
     end
-    println(io, "\nDownload directory: ", data_download_dir())
-    for k in sort(collect(keys(DATASETS)))
-        println(io, "\n[$k]")
-        for f in DATASETS[k]
-            path = find_data_file(f.relpath)
-            if isnothing(path)
-                println(io, "  ✗ $(f.relpath)  — MISSING (run download_data())")
-            else
-                println(io, "  ✓ $(f.relpath)  → $path")
-            end
-        end
-        for (provider, note) in unique((f.provider, f.note) for f in DATASETS[k])
-            println(io, "  provider: $provider — $note")
-        end
-    end
+    println(io, "Downloads go to: ", data_download_dir())
     return nothing
 end

@@ -51,12 +51,60 @@ using Aqua
         @test !data_available(:no_such_dataset)
         @test_throws ErrorException download_data(:no_such_dataset)
 
-        # data_status prints something informative without touching the network.
+        # Line-list naming must match what load_linelist(base, isos) expects:
+        # iso 1 is "<base>.par", the rest "<base>_iso<n>.par".
+        b = linelist_base(CO2)
+        @test b == joinpath("linelists", "co2_620_825")
+        @test IRSounderLBL._linelist_file(b, 1) == b * ".par"
+        @test IRSounderLBL._linelist_file(b, 4) == b * "_iso4.par"
+        @test linelist_base(H2O; ν_min = 645.0, ν_max = 2760.0) ==
+              joinpath("linelists", "h2o_645_2760")
+        # Every default species has an ASCII filename tag (SPECIES_NAME is Unicode).
+        for (sp, _) in IRSounderLBL.LINELIST_DEFAULT_SPECIES
+            @test haskey(IRSounderLBL._SPECIES_TAG, sp)
+        end
+
+        # Missing line lists must error naming the files, not return a partial set:
+        # a silently-absent isotopologue is a physics error (cf. CO2 iso 4 / 665 cm⁻¹).
+        if !all(!isnothing(find_data_file(IRSounderLBL._linelist_file(linelist_base(sp), iso)))
+                for (sp, isos) in IRSounderLBL.LINELIST_DEFAULT_SPECIES for iso in isos)
+            @test_throws ErrorException default_linelists()
+        end
+
+        # hitran_api_key_available reflects ENV without leaking the key.
+        withenv("HITRAN_API_KEY" => nothing) do
+            @test !hitran_api_key_available()
+            @test_throws ErrorException download_linelists()      # no network touched
+        end
+        withenv("HITRAN_API_KEY" => "dummy") do
+            @test hitran_api_key_available()
+        end
+
+        # Manual (account-gated) datasets are advertised with a usable URL.
+        @test !isempty(IRSounderLBL.MANUAL_DATASETS)
+        for m in IRSounderLBL.MANUAL_DATASETS
+            @test occursin("http", m.url)
+            @test !isempty(m.name) && !isempty(m.used_for) && !isempty(m.probe)
+        end
+
+        # data_status is the documented entry point: it must render the whole
+        # checklist without touching the network, whatever is or isn't present.
         io = IOBuffer()
-        data_status(io)
+        withenv("HITRAN_API_KEY" => nothing) do
+            data_status(io)
+        end
         s = String(take!(io))
-        @test occursin("Data search path", s)
+        @test occursin("BUNDLED", s)
+        @test occursin("AUTOMATIC DOWNLOAD", s)
+        @test occursin("LINE LISTS", s)
+        @test occursin("MANUAL", s)
         @test occursin("cia", s)
+        @test occursin("Search path", s)
+        # With no key set it must tell the user how to get one.
+        @test occursin("hitran.org/register", s)
+        for m in IRSounderLBL.MANUAL_DATASETS
+            @test occursin(m.name, s)
+        end
     end
 
     # ── WavenumberGrid ────────────────────────────────────────────────────

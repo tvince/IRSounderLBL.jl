@@ -39,32 +39,90 @@ Requires Julia ≥ 1.10. A `HITRAN_API_KEY` environment variable is needed
 if you want to fetch lines via `fetch_hitran_api`; otherwise local `.par`
 files work standalone.
 
-### Fetching the non-redistributable data
+## Getting the data
 
-The HITRAN collision-induced-absorption (CIA) tables cannot be shipped with the
-source (HITRAN forbids redistribution), so fetch them once:
+Spectroscopic data that HITRAN does not allow us to redistribute is fetched
+rather than bundled. Start here — this prints a checklist of what you have, what
+you're missing, and the exact next step for each gap:
 
 ```julia
 using IRSounderLBL
-download_data()   # ~12 MB, SHA-256 verified
-data_status()     # show what is present and where it was found
+data_status()
 ```
 
-They land in a package-owned scratch space by default; set `IRSOUNDER_DATA_DIR`
-or call `set_data_dir!(path)` to put them elsewhere. Without them, `co2_cia`,
-`n2_cia`, and `o2_cia` warn once and return zeros — the rest of the package works
-normally. See [`data/cia/SOURCE.md`](data/cia/SOURCE.md).
+**One-time setup:**
+
+```julia
+download_data()              # HITRAN CIA tables, ~12 MB, SHA-256 verified, no key
+download_data(:linelists)    # HITRAN line lists — needs a free API key (below)
+```
+
+Then the forward model runs:
+
+```julia
+prof = afgl_us_standard_50lev()
+ν, R, BT = forward_model(prof, default_linelists())
+```
+
+### HITRAN API key
+
+Line lists come from the HITRAN API, which needs a free key:
+
+1. register at <https://hitran.org/register/>
+2. copy your key from <https://hitran.org/profile/>
+3. `export HITRAN_API_KEY=<your key>` in your shell — never in the repo
+
+`download_data(:linelists)` defaults to the **15 µm working set** (CO₂ isotopologues
+1–4, H₂O 1–3, 620–825 cm⁻¹ — the ν₂ band the package is validated against, plus the
+±25 cm⁻¹ line-wing margin). Widen it when you need to:
+
+```julia
+download_data(:linelists; ν_min = 620.0, ν_max = 2785.0,
+              species = [CO2 => 1:4, H2O => 1:3, O3 => 1:4])   # full IASI range
+```
+
+Unlike the CIA tables, line lists carry no pinnable checksum — HITRAN serves the
+current release and revises it over time. Since a retrieval's results depend on the
+line list behind it, each download appends to `linelists/PROVENANCE.md` recording
+the query, the date, and the line counts.
+
+### Where it goes
+
+Downloads land in a package-owned scratch space by default; `IRSOUNDER_DATA_DIR` or
+`set_data_dir!(path)` overrides that. Resolution order is override → `<pkg>/data` →
+scratch, so a copy you drop in `data/` always wins.
+
+### Optional data we cannot fetch for you
+
+`data_status()` also reports these, with links — they sit behind accounts or are
+scene-specific:
+
+| Data | Needed for | Source |
+|---|---|---|
+| CO₂ line-mixing (HITRAN2020) | `VPYLineMixing`, `VPWLineMixing` | [hitran.org/supplementary](https://hitran.org/supplementary/) → Line-Mixing (login) |
+| IASI L1C granules | real-radiance retrievals | [NOAA CLASS](https://www.class.noaa.gov/) |
+| EUMETSAT IASI NCM | instrument noise covariance as `Se` | [EUMETSAT Data Store](https://data.eumetsat.int/) |
+
+Without the CIA tables, `co2_cia`/`n2_cia`/`o2_cia` warn once and return zeros and
+everything else works normally. Without a line list, the forward model cannot run.
 
 ## Quick start
 
+Once `download_data(:linelists)` has run (see [Getting the data](#getting-the-data)):
+
 ```julia
 using IRSounderLBL
 
-ll = load_hitran_par("data/co2_645_700.par"; ν_min=645.0, ν_max=700.0)
-prof = us_standard_atmosphere()
-linelists = Dict{GasSpecies, HITRANLinelist}(CO2 => ll)
+prof = afgl_us_standard_50lev()
+ν, R, BT = forward_model(prof, default_linelists())
+```
 
-ν, R, BT = iasi_forward_model(prof, linelists)
+`default_linelists()` loads whatever `download_data(:linelists)` installed. To use
+your own `.par` files instead:
+
+```julia
+ll = load_linelist("path/to/co2_645_700", 1:4; ν_min=620.0, ν_max=825.0)
+ν, R, BT = forward_model(prof, Dict{GasSpecies, HITRANLinelist}(CO2 => ll))
 ```
 
 Returns the IASI channel grid `ν` (cm⁻¹), spectral radiance `R`

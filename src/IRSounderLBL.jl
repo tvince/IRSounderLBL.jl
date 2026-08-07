@@ -15,6 +15,7 @@ include("Atmosphere/standard_atm.jl")
 include("HITRAN/linelist.jl")
 include("HITRAN/fetch.jl")
 include("HITRAN/cache.jl")
+include("HITRAN/bootstrap.jl")
 include("HITRAN/partition.jl")
 include("HITRAN/broadening.jl")
 
@@ -54,7 +55,7 @@ include("Estimation/robust_estimation.jl")
 # Utils exports
 export WavenumberGrid, wavenumber_grid
 export download_data, data_status, data_available, data_search_path,
-       data_download_dir, find_data_file, set_data_dir!
+       data_download_dir, find_data_file, find_data_path, set_data_dir!
 
 # Atmosphere exports
 export GasSpecies, HITRAN_MOLECULE_ID, SPECIES_NAME
@@ -70,6 +71,7 @@ export afgl_atmosphere, afgl_us_standard_50lev, afgl_tropical_50lev,
 export HITRANLine, HITRANLinelist, filter_linelist
 export load_hitran_par, fetch_hitran_api
 export load_linelist, linelist_cache_dir, clear_linelist_cache, set_linelist_cache_dir!
+export download_linelists, default_linelists, linelist_base, hitran_api_key_available
 export T_REF, partition_function, Q_ratio
 export pressure_broadened_width, temperature_scaled_intensity, pressure_shift
 
