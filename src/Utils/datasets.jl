@@ -449,9 +449,9 @@ function data_status(io::IO = stdout)
 
     # ── Tier 2: line lists (API key) ─────────────────────────────────────────
     println(io, "\nLINE LISTS  (download_data(:linelists) — needs a free HITRAN API key)")
-    haskey = hitran_api_key_available()
-    println(io, mark(haskey), "HITRAN_API_KEY ",
-            haskey ? "is set" : "NOT set — register free at https://hitran.org/register/")
+    have_key = hitran_api_key_available()
+    println(io, mark(have_key), "HITRAN_API_KEY ",
+            have_key ? "is set" : "NOT set — register free at https://hitran.org/register/")
     nfound = 0
     ntotal = 0
     for (sp, isos) in LINELIST_DEFAULT_SPECIES, iso in isos
@@ -464,7 +464,7 @@ function data_status(io::IO = stdout)
             Int(LINELIST_DEFAULT_ν[1]), "–", Int(LINELIST_DEFAULT_ν[2]), " cm⁻¹): ",
             nfound, "/", ntotal, " files")
     if nfound < ntotal
-        haskey || push!(todo, "shell> export HITRAN_API_KEY=<your key>   " *
+        have_key || push!(todo, "shell> export HITRAN_API_KEY=<your key>   " *
                               "# free: https://hitran.org/register/")
         push!(todo, "julia> download_data(:linelists)")
     end
