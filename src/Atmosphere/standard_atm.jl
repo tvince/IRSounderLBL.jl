@@ -245,13 +245,8 @@ function _read_afgl_50lev(path::String)
     return AtmosphericProfile(p, T, z, vmr)
 end
 
-# Default location of the bundled AFGL CSVs, resolved relative to this source file
-# (like the continuum tables in continuum.jl) so it is independent of the process
-# working directory — e.g. under `Pkg.test()`, whose sandbox CWD is not the repo root.
-const _AFGL_DATA_DIR = normpath(joinpath(@__DIR__, "..", "..", "data"))
-
 """
-    afgl_atmosphere(name; data_dir=<pkg>/data) -> AtmosphericProfile
+    afgl_atmosphere(name; data_dir=nothing) -> AtmosphericProfile
 
 Return one of the six AFGL (1986) model atmospheres on 50 pressure levels
 (0–120 km). `name` is a `Symbol` or `String`, one of $(AFGL_ATMOSPHERES).
@@ -259,44 +254,54 @@ Each profile is on its own native grid (shared AFGL altitude levels; pressure
 differs because T differs) and is directly usable as a retrieval prior — pick
 the climate zone matching the scene (e.g. `:tropical` for a warm marine FOV).
 
+The CSVs ship with the package; by default they are located through
+[`find_data_file`](@ref), which is independent of the process working directory
+(e.g. under `Pkg.test()`, whose sandbox CWD is not the repo root). Pass `data_dir`
+to read them from somewhere else instead.
+
 Data source: ARTS XML data repository (Anderson et al. 1986, AFGL-TR-86-0110).
 Generate the CSVs with scripts/build_afgl_atmospheres.py.
 """
-function afgl_atmosphere(name::Symbol; data_dir::String = _AFGL_DATA_DIR)
+function afgl_atmosphere(name::Symbol; data_dir::Union{AbstractString,Nothing} = nothing)
     name in AFGL_ATMOSPHERES ||
         error("Unknown AFGL atmosphere :$name. Choose one of $(AFGL_ATMOSPHERES).")
-    return _read_afgl_50lev(joinpath(data_dir, "afgl_$(name)_50lev.csv"))
+    fname = "afgl_$(name)_50lev.csv"
+    path  = isnothing(data_dir) ? find_data_file(fname) : joinpath(data_dir, fname)
+    (isnothing(path) || !isfile(path)) &&
+        error("AFGL profile CSV not found: $fname (searched " *
+              (isnothing(data_dir) ? join(data_search_path(), ", ") : String(data_dir)) * ")")
+    return _read_afgl_50lev(path)
 end
 afgl_atmosphere(name::AbstractString; kwargs...) =
     afgl_atmosphere(Symbol(replace(name, '-' => '_')); kwargs...)
 
 """
-    afgl_us_standard_50lev(; data_dir=<pkg>/data)
+    afgl_us_standard_50lev(; data_dir=nothing)
 
 AFGL US Standard Atmosphere on 50 pressure levels (0–120 km). Extends the
 standard 43-level profile into the mesosphere and lower thermosphere, required
 for correct RT in optically thick bands such as CO₂ 4.3 µm. See
 [`afgl_atmosphere`](@ref) for the other five climate zones.
 """
-afgl_us_standard_50lev(; data_dir::String = _AFGL_DATA_DIR) =
+afgl_us_standard_50lev(; data_dir::Union{AbstractString,Nothing} = nothing) =
     afgl_atmosphere(:us_standard; data_dir=data_dir)
 
 "AFGL Tropical model atmosphere, 50-level. See [`afgl_atmosphere`](@ref)."
-afgl_tropical_50lev(; data_dir::String = _AFGL_DATA_DIR) =
+afgl_tropical_50lev(; data_dir::Union{AbstractString,Nothing} = nothing) =
     afgl_atmosphere(:tropical; data_dir=data_dir)
 
 "AFGL Midlatitude Summer model atmosphere, 50-level. See [`afgl_atmosphere`](@ref)."
-afgl_midlatitude_summer_50lev(; data_dir::String = _AFGL_DATA_DIR) =
+afgl_midlatitude_summer_50lev(; data_dir::Union{AbstractString,Nothing} = nothing) =
     afgl_atmosphere(:midlatitude_summer; data_dir=data_dir)
 
 "AFGL Midlatitude Winter model atmosphere, 50-level. See [`afgl_atmosphere`](@ref)."
-afgl_midlatitude_winter_50lev(; data_dir::String = _AFGL_DATA_DIR) =
+afgl_midlatitude_winter_50lev(; data_dir::Union{AbstractString,Nothing} = nothing) =
     afgl_atmosphere(:midlatitude_winter; data_dir=data_dir)
 
 "AFGL Subarctic Summer model atmosphere, 50-level. See [`afgl_atmosphere`](@ref)."
-afgl_subarctic_summer_50lev(; data_dir::String = _AFGL_DATA_DIR) =
+afgl_subarctic_summer_50lev(; data_dir::Union{AbstractString,Nothing} = nothing) =
     afgl_atmosphere(:subarctic_summer; data_dir=data_dir)
 
 "AFGL Subarctic Winter model atmosphere, 50-level. See [`afgl_atmosphere`](@ref)."
-afgl_subarctic_winter_50lev(; data_dir::String = _AFGL_DATA_DIR) =
+afgl_subarctic_winter_50lev(; data_dir::Union{AbstractString,Nothing} = nothing) =
     afgl_atmosphere(:subarctic_winter; data_dir=data_dir)

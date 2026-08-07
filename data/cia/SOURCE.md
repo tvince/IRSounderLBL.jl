@@ -3,17 +3,30 @@
 Collision-induced absorption (CIA) cross-section tables used by `co2_cia`,
 `n2_cia`, and `o2_cia` in `src/CrossSections/continuum.jl`.
 
-These files are **not tracked in git** (`data/` is gitignored) and do **not** ship
-with the package. They must be downloaded manually from the HITRAN CIA database.
-If a file is missing, the loader emits a one-time warning and returns zeros.
+These files are **not tracked in git** and do **not** ship with the package:
+HITRAN's terms permit use with citation but **not redistribution**. If a file is
+missing the loader emits a one-time warning and returns zeros.
+
+## Getting the data
+
+```julia
+using IRSounderLBL
+download_data()      # fetches all three, verifies SHA-256
+data_status()        # shows what is present and where it was found
+```
+
+`download_data()` writes into a package-owned `Scratch.jl` space by default (or
+`IRSOUNDER_DATA_DIR` / the `data_dir` Preference, if set — see `set_data_dir!`).
+Files are resolved lazily on first use, so a download during a live session takes
+effect without restarting Julia. Alternatively, drop the files into this directory
+by hand under the exact filenames below — the registry lives in
+`src/Utils/datasets.jl`, which also pins the expected checksums.
 
 ## Source
 
 HITRAN Collision-Induced Absorption database: <https://hitran.org/cia/>
 
-Download each pair's `.cia` file and place it in this directory (`data/cia/`)
-under the exact filename below (the loader paths are hard-coded in
-`continuum.jl:165-168`).
+Direct URLs (as used by `download_data()`): `https://hitran.org/data/CIA/main/<file>`
 
 | File                | Collision pair | Coverage (this copy)            |
 |---------------------|----------------|---------------------------------|

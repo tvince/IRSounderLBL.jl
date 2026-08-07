@@ -16,10 +16,21 @@ as a map; regenerate anything missing rather than checking it in.
 | `mt_ckd_h2o/` | MT-CKD 4.3 H₂O continuum tables (AER). |
 | `tips/` | TIPS-2024 raw tables. |
 | `Line-mixing_HITRAN2020/` | Lamouroux/HITRAN line-mixing data + Fortran reference. |
-| `cia/CO2-CO2_2024.cia` | HITRAN CIA (Karman et al. 2019, 2024 update). Download from hitran.org/cia/ → CO2-CO2 → latest record. Used by `co2_cia`. |
+| `cia/CO2-CO2_2024.cia` | HITRAN CIA (Karman et al. 2019, 2024 update). Used by `co2_cia`. Fetch with `download_data()` — see below. |
 | `cia/N2-N2_2021.cia`   | HITRAN CIA, N₂–N₂ homogeneous pair. Used by `n2_cia`. |
 | `cia/O2-O2_2024.cia`   | HITRAN CIA, O₂–O₂ homogeneous pair. Used by `o2_cia`. |
 | `standard_atmospheres/` | AFGL standard atmospheres (raw). |
+
+The three `cia/*.cia` files are fetched automatically, checksum-verified, by
+
+```julia
+using IRSounderLBL; download_data(); data_status()
+```
+
+By default they go to a package-owned scratch space rather than here, so a fresh
+clone needs no manual steps. Copies placed in `data/cia/` are still found first
+(see `data_search_path()`). The registry — URLs and pinned SHA-256 — lives in
+`src/Utils/datasets.jl`; provenance and citation in `cia/SOURCE.md`.
 
 ## Repo-tracked seeds (pre-prepared inputs, not generated)
 

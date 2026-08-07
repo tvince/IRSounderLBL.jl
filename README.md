@@ -39,6 +39,22 @@ Requires Julia ≥ 1.10. A `HITRAN_API_KEY` environment variable is needed
 if you want to fetch lines via `fetch_hitran_api`; otherwise local `.par`
 files work standalone.
 
+### Fetching the non-redistributable data
+
+The HITRAN collision-induced-absorption (CIA) tables cannot be shipped with the
+source (HITRAN forbids redistribution), so fetch them once:
+
+```julia
+using IRSounderLBL
+download_data()   # ~12 MB, SHA-256 verified
+data_status()     # show what is present and where it was found
+```
+
+They land in a package-owned scratch space by default; set `IRSOUNDER_DATA_DIR`
+or call `set_data_dir!(path)` to put them elsewhere. Without them, `co2_cia`,
+`n2_cia`, and `o2_cia` warn once and return zeros — the rest of the package works
+normally. See [`data/cia/SOURCE.md`](data/cia/SOURCE.md).
+
 ## Quick start
 
 ```julia

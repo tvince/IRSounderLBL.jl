@@ -1,6 +1,7 @@
 module IRSounderLBL
 
 # Utils
+include("Utils/datasets.jl")
 include("Utils/wavenumber_grid.jl")
 include("Utils/interpolation.jl")
 
@@ -52,6 +53,8 @@ include("Estimation/robust_estimation.jl")
 
 # Utils exports
 export WavenumberGrid, wavenumber_grid
+export download_data, data_status, data_available, data_search_path,
+       data_download_dir, find_data_file, set_data_dir!
 
 # Atmosphere exports
 export GasSpecies, HITRAN_MOLECULE_ID, SPECIES_NAME

@@ -44,14 +44,14 @@ const _O2_DRY_VMR = 0.20946     # O₂ mole fraction of dry air
 
 # ── MT-CKD 4.3 lookup table (loaded once at module init) ─────────────────────
 
-const _CKD_CSV = joinpath(@__DIR__, "..", "..", "data", "mt_ckd_h2o", "mt_ckd43_h2o_coeffs.csv")
+const _CKD_RELPATH = joinpath("mt_ckd_h2o", "mt_ckd43_h2o_coeffs.csv")
 
-function _load_ckd_table()
+function _load_ckd_table(path::AbstractString)
     nu_v   = Float64[]
     Cs_v   = Float64[]
     Cf_v   = Float64[]
     texp_v = Float64[]
-    open(_CKD_CSV) do f
+    open(path) do f
         readline(f)  # skip header
         for line in eachline(f)
             parts = split(line, ',')
@@ -67,23 +67,22 @@ function _load_ckd_table()
     return (itp_Cs, itp_Cf, itp_texp)
 end
 
-const _CKD = _load_ckd_table()
+const _CKD = DataTable(_CKD_RELPATH, _load_ckd_table)
 
 # ── MT-CKD CO₂ continuum table (Hartmann line-coupling; from contnm.f90) ─────
 # Single coefficient S(ν) on a 2 cm⁻¹ grid (−4 … 10000 cm⁻¹). Extracted from
 # LBLRTM's BLOCK DATA BFCO2 by scripts/extract_ckd_co2.py.
 
-const _CKD_CO2_CSV = joinpath(@__DIR__, "..", "..", "data", "mt_ckd_co2", "mt_ckd_co2_coeffs.csv")
+const _CKD_CO2_RELPATH = joinpath("mt_ckd_co2", "mt_ckd_co2_coeffs.csv")
 
-function _load_ckd_co2_table()
-    isfile(_CKD_CO2_CSV) || return nothing
+function _load_ckd_co2_table(path::AbstractString)
     nu_v   = Float64[]
     Seff_v = Float64[]   # S × xfac: XFACCO2 (2000–2998) folded in on the coarse grid
     tdep_v = Float64[]   # bandhead exponent (nonzero only on 2386–2434)
-    open(_CKD_CO2_CSV) do f
+    open(path) do f
         header = readline(f)
         ncol = length(split(header, ','))
-        ncol == 4 || error("$_CKD_CO2_CSV has $ncol columns; expected 4 " *
+        ncol == 4 || error("$path has $ncol columns; expected 4 " *
                            "(nu_cm1,S,xfac,tdep_exp). Regenerate with scripts/extract_ckd_co2.py.")
         for line in eachline(f)
             parts = split(line, ',')
@@ -97,8 +96,7 @@ function _load_ckd_co2_table()
     return (itp_S, itp_tdep)
 end
 
-const _CKD_CO2 = _load_ckd_co2_table()
-const _CKD_CO2_WARNED = Ref(false)
+const _CKD_CO2 = DataTable(_CKD_CO2_RELPATH, _load_ckd_co2_table)
 const _T_EFF = 246.0   # bandhead temperature-correction reference (contnm.f90 FRNCO2)
 
 # ── HITRAN CIA lookup tables ─────────────────────────────────────────────────
@@ -116,8 +114,6 @@ struct _CIABlock
 end
 
 function _load_cia_table(path::AbstractString)
-    isfile(path) || return nothing
-
     blocks = _CIABlock[]
     cur_T  = NaN
     cur_ν  = Float64[]
@@ -162,18 +158,11 @@ function _load_cia_table(path::AbstractString)
     return isempty(blocks) ? nothing : blocks
 end
 
-const _CIA_DIR     = joinpath(@__DIR__, "..", "..", "data", "cia")
-const _CIA_CO2_FILE = joinpath(_CIA_DIR, "CO2-CO2_2024.cia")
-const _CIA_N2_FILE  = joinpath(_CIA_DIR, "N2-N2_2021.cia")
-const _CIA_O2_FILE  = joinpath(_CIA_DIR, "O2-O2_2024.cia")
-
-const _CIA_CO2 = _load_cia_table(_CIA_CO2_FILE)
-const _CIA_N2  = _load_cia_table(_CIA_N2_FILE)
-const _CIA_O2  = _load_cia_table(_CIA_O2_FILE)
-
-const _CIA_CO2_WARNED = Ref(false)
-const _CIA_N2_WARNED  = Ref(false)
-const _CIA_O2_WARNED  = Ref(false)
+# HITRAN forbids redistribution, so these are not bundled — `download_data()`
+# fetches them and `DataTable` resolves them lazily on first use.
+const _CIA_CO2 = DataTable(joinpath("cia", "CO2-CO2_2024.cia"), _load_cia_table)
+const _CIA_N2  = DataTable(joinpath("cia", "N2-N2_2021.cia"),  _load_cia_table)
+const _CIA_O2  = DataTable(joinpath("cia", "O2-O2_2024.cia"),  _load_cia_table)
 
 # ── Radiation field term ──────────────────────────────────────────────────────
 
@@ -198,7 +187,12 @@ function h2o_continuum(ν_grid::WavenumberGrid,
     rho_rat = (p_hPa / _P_REF) * (_T_REF / T)
     n_h2o   = vmr_h2o * p_hPa * 100.0 / (_KB * T) * 1e-6  # molec/cm³
 
-    itp_Cs, itp_Cf, itp_texp = _CKD
+    ckd = get_table(_CKD)
+    if ckd === nothing
+        warn_missing_data(_CKD, "MT-CKD H₂O continuum")
+        return zeros(Float64, ν_grid.n)
+    end
+    itp_Cs, itp_Cf, itp_texp = ckd
 
     k = Vector{Float64}(undef, ν_grid.n)
     @inbounds for (i, ν) in enumerate(ν_grid.ν)
@@ -234,16 +228,13 @@ function co2_continuum(ν_grid::WavenumberGrid,
                        vmr_co2::Float64,
                        p_hPa::Float64,
                        T::Float64)::Vector{Float64}
-    if _CKD_CO2 === nothing
-        if !_CKD_CO2_WARNED[]
-            @warn "MT-CKD CO₂ coefficient table not found at $_CKD_CO2_CSV; co2_continuum returns zeros. " *
-                  "Run scripts/extract_ckd_co2.py to generate it."
-            _CKD_CO2_WARNED[] = true
-        end
+    ckd_co2 = get_table(_CKD_CO2)
+    if ckd_co2 === nothing
+        warn_missing_data(_CKD_CO2, "MT-CKD CO₂ continuum")
         return zeros(Float64, ν_grid.n)
     end
 
-    itp_S, itp_tdep = _CKD_CO2
+    itp_S, itp_tdep = ckd_co2
     rho_rat = (p_hPa / _P_REF) * (_T_REF / T)
     n_co2   = vmr_co2 * p_hPa * 100.0 / (_KB * T) * 1e-6  # molec/cm³
     pref    = 1e-20 * n_co2 * rho_rat
@@ -274,12 +265,9 @@ function co2_cia(ν_grid::WavenumberGrid,
                  vmr_co2::Float64,
                  p_hPa::Float64,
                  T::Float64)::Vector{Float64}
-    if _CIA_CO2 === nothing
-        if !_CIA_CO2_WARNED[]
-            @warn "HITRAN CO₂–CO₂ CIA table not found at $_CIA_CO2_FILE; co2_cia returns zeros. " *
-                  "Download CO2-CO2_2024.cia from hitran.org/cia/ to enable."
-            _CIA_CO2_WARNED[] = true
-        end
+    cia = get_table(_CIA_CO2)
+    if cia === nothing
+        warn_missing_data(_CIA_CO2, "HITRAN CO₂–CO₂ CIA")
         return zeros(Float64, ν_grid.n)
     end
 
@@ -289,7 +277,7 @@ function co2_cia(ν_grid::WavenumberGrid,
 
     k = Vector{Float64}(undef, ν_grid.n)
     @inbounds for (i, ν) in enumerate(ν_grid.ν)
-        k[i] = _cia_σ(_CIA_CO2, ν, T) * nn
+        k[i] = _cia_σ(cia, ν, T) * nn
     end
     return k
 end
@@ -305,19 +293,16 @@ function n2_cia(ν_grid::WavenumberGrid,
                 vmr_n2::Float64,
                 p_hPa::Float64,
                 T::Float64)::Vector{Float64}
-    if _CIA_N2 === nothing
-        if !_CIA_N2_WARNED[]
-            @warn "HITRAN N₂–N₂ CIA table not found at $_CIA_N2_FILE; n2_cia returns zeros. " *
-                  "Download N2-N2_2021.cia from hitran.org/cia/ to enable."
-            _CIA_N2_WARNED[] = true
-        end
+    cia = get_table(_CIA_N2)
+    if cia === nothing
+        warn_missing_data(_CIA_N2, "HITRAN N₂–N₂ CIA")
         return zeros(Float64, ν_grid.n)
     end
     n_n2 = vmr_n2 * p_hPa * 100.0 / (_KB * T) * 1e-6
     nn   = n_n2 * n_n2
     k = Vector{Float64}(undef, ν_grid.n)
     @inbounds for (i, ν) in enumerate(ν_grid.ν)
-        k[i] = _cia_σ(_CIA_N2, ν, T) * nn
+        k[i] = _cia_σ(cia, ν, T) * nn
     end
     return k
 end
@@ -333,19 +318,16 @@ function o2_cia(ν_grid::WavenumberGrid,
                 vmr_o2::Float64,
                 p_hPa::Float64,
                 T::Float64)::Vector{Float64}
-    if _CIA_O2 === nothing
-        if !_CIA_O2_WARNED[]
-            @warn "HITRAN O₂–O₂ CIA table not found at $_CIA_O2_FILE; o2_cia returns zeros. " *
-                  "Download O2-O2_2024.cia from hitran.org/cia/ to enable."
-            _CIA_O2_WARNED[] = true
-        end
+    cia = get_table(_CIA_O2)
+    if cia === nothing
+        warn_missing_data(_CIA_O2, "HITRAN O₂–O₂ CIA")
         return zeros(Float64, ν_grid.n)
     end
     n_o2 = vmr_o2 * p_hPa * 100.0 / (_KB * T) * 1e-6
     nn   = n_o2 * n_o2
     k = Vector{Float64}(undef, ν_grid.n)
     @inbounds for (i, ν) in enumerate(ν_grid.ν)
-        k[i] = _cia_σ(_CIA_O2, ν, T) * nn
+        k[i] = _cia_σ(cia, ν, T) * nn
     end
     return k
 end

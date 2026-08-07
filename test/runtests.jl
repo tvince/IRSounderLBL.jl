@@ -13,6 +13,52 @@ using Aqua
         Aqua.test_all(IRSounderLBL; ambiguities = false)
     end
 
+    # ── Managed data files ────────────────────────────────────────────────
+    @testset "Data files" begin
+        # Search path is non-empty, ends at the download dir, and the in-repo
+        # data dir is on it (that is where the bundled tables live).
+        roots = data_search_path()
+        @test !isempty(roots)
+        @test data_download_dir() in roots
+        @test normpath(joinpath(pkgdir(IRSounderLBL), "data")) in normpath.(roots)
+
+        # Bundled, redistributable tables must resolve on a fresh clone.
+        @test !isnothing(find_data_file("afgl_us_standard_50lev.csv"))
+        @test !isnothing(find_data_file(joinpath("mt_ckd_h2o", "mt_ckd43_h2o_coeffs.csv")))
+        @test !isnothing(find_data_file(joinpath("mt_ckd_co2", "mt_ckd_co2_coeffs.csv")))
+        @test isnothing(find_data_file("no_such_file_anywhere.csv"))
+
+        # Registry integrity: every entry is a real URL with a 64-hex SHA-256, and
+        # a present file must actually match its pin (catches a stale checksum or a
+        # hand-placed wrong file long before it silently corrupts a retrieval).
+        for (group, files) in IRSounderLBL.DATASETS
+            @test !isempty(files)
+            for f in files
+                @test startswith(f.url, "https://")
+                @test occursin(r"^[0-9a-f]{64}$", f.sha256)
+                @test f.bytes > 0
+                path = find_data_file(f.relpath)
+                if !isnothing(path)
+                    @test IRSounderLBL._sha256_file(path) == f.sha256
+                    @test filesize(path) == f.bytes
+                end
+            end
+        end
+
+        # data_available agrees with per-file resolution; unknown groups are false.
+        @test data_available(:cia) ==
+              all(!isnothing(find_data_file(f.relpath)) for f in IRSounderLBL.DATASETS[:cia])
+        @test !data_available(:no_such_dataset)
+        @test_throws ErrorException download_data(:no_such_dataset)
+
+        # data_status prints something informative without touching the network.
+        io = IOBuffer()
+        data_status(io)
+        s = String(take!(io))
+        @test occursin("Data search path", s)
+        @test occursin("cia", s)
+    end
+
     # ── WavenumberGrid ────────────────────────────────────────────────────
     @testset "WavenumberGrid" begin
         g = wavenumber_grid(645.0, 2760.0, 0.25)
@@ -537,13 +583,20 @@ using Aqua
         @test length(k_h2o) == g.n
         @test all(k_h2o .>= 0)
 
-        # CO₂ CIA (HITRAN) should peak in the 1200-1500 cm⁻¹ window
+        # CO₂ CIA (HITRAN) should peak in the 1200-1500 cm⁻¹ window. The HITRAN CIA
+        # tables are not redistributable, so they may be absent (see download_data());
+        # the shape assertion only makes sense when the data is actually there.
         k_co2_cia = co2_cia(g, 4.15e-4, 1013.25, 296.0)
         @test length(k_co2_cia) == g.n
         @test all(k_co2_cia .>= 0)
-        idx_1350 = argmin(abs.(g.ν .- 1350.0))
-        idx_2000 = argmin(abs.(g.ν .- 2000.0))
-        @test k_co2_cia[idx_1350] > k_co2_cia[idx_2000]
+        if data_available(:cia)
+            idx_1350 = argmin(abs.(g.ν .- 1350.0))
+            idx_2000 = argmin(abs.(g.ν .- 2000.0))
+            @test k_co2_cia[idx_1350] > k_co2_cia[idx_2000]
+        else
+            @info "HITRAN CIA data absent — skipping CIA shape test (run download_data())"
+            @test all(iszero, k_co2_cia)      # documented graceful degradation
+        end
 
         # MT-CKD CO₂ continuum: positive, and decays from the ν₂ band toward
         # the window (S peaks near band center).
