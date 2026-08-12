@@ -19,13 +19,20 @@ Research code, validated against ARTS 2.6 on the IASI spectral range
 - HITRAN line-by-line absorption (HITRAN 2020 API + local `.par` loader)
 - Three Voigt-profile evaluators — `Weideman`, `PseudoVoigt`, `FullFaddeeva` (default)
 - TIPS-2024 partition functions (46 isotopologues)
-- MT-CKD 4.3 H₂O self + foreign continuum (tabulated AER data)
+- MT-CKD 4.3 H₂O self + foreign continuum (tabulated AER data) and CO₂ continuum
 - HITRAN CIA tables for CO₂, N₂, O₂
 - CO₂ line mixing — first-order (Niro/Lamouroux VP_Y) and full-matrix (VP_W)
 - Schwarzschild layer-by-layer RTE solver
 - IASI instrument response: Gaussian apodization (L1C default) or Norton-Beer
 - Off-nadir geometry: scan-angle → local-zenith conversion
 - Standard atmospheres: US Standard, Tropical, Subarctic; 43- and 50-level AFGL
+- Analytic Jacobians (temperature, VMR, surface), validated against finite
+  differences including continuum and line-mixing coupling
+- Optimal-estimation retrieval (`optimal_estimation`) with averaging kernels,
+  DOF and the Rodgers error budget; a-priori covariance builder (`build_sa`);
+  reduced VMR bases (`ColumnScale`, `PartialColumns`)
+- Real-data ingest: IASI L1C granules (`read_iasi_l1c`) and EUMETSAT instrument
+  noise covariance as retrieval Sₑ (`read_iasi_ncm`)
 
 ## Install
 
@@ -125,19 +132,28 @@ ll = load_linelist("path/to/co2_645_700", 1:4; ν_min=620.0, ν_max=825.0)
 ν, R, BT = forward_model(prof, Dict{GasSpecies, HITRANLinelist}(CO2 => ll))
 ```
 
-Returns the IASI channel grid `ν` (cm⁻¹), spectral radiance `R`
+Returns the sensor channel grid `ν` (cm⁻¹), spectral radiance `R`
 (W m⁻² sr⁻¹ (cm⁻¹)⁻¹), and brightness temperature `BT` (K).
 
-Common keyword arguments to `iasi_forward_model`:
+Common keyword arguments to `forward_model`:
 
-- `iasi::IASIInstrument` — defaults to standard IASI L1C
+- `sounder::Sounder` — defaults to `IASIInstrument()`; also `IASINGInstrument()`,
+  `CrISInstrument()`, `MTGIRSInstrument()`
 - `geom::ViewingGeometry` — `nadir_geometry()` or use `scan_angle_to_local_zenith`
 - `T_sfc`, `ε_sfc` — surface temperature override and emissivity
 - `apply_continuum::Bool` — MT-CKD + CIA on/off
-- `with_ils::Bool` — convolve with the IASI ILS
+- `with_ils::Bool` — convolve with the instrument ILS
 - `apodization::Symbol` — `:gaussian` (L1C) or `:norton_beer`
 - `line_mixing` — `VPYLineMixing(...)` or `VPWLineMixing(...)`
-- `high_res_factor::Int` — internal grid oversampling (default 4)
+- `internal_dnu::Float64` — absolute internal monochromatic grid spacing in cm⁻¹
+  (default `0.001`), auto-adapting to any sensor Δν. Converges ILS-convolved BT
+  to ≤6 mK RMS against a 0.0005 reference
+
+The older `iasi_forward_model` / `iasi_grid` names remain as aliases, and
+`high_res_factor` still overrides `internal_dnu` as a legacy escape hatch — but
+it is oversampling relative to the *sensor* Δν, so it does not adapt across
+instruments. The former default of 4 (0.0625 cm⁻¹ for IASI) is ≈1 K off in
+dense bands; prefer `internal_dnu`.
 
 See `smoke_test.jl` and `scripts/` for end-to-end examples including
 line-mixing runs and ARTS comparison drivers.
@@ -161,7 +177,8 @@ src/
 ├── HITRAN/        linelist I/O, partition functions, broadening
 ├── CrossSections/ Voigt, continuum, line mixing, optical depth
 ├── Solver/        Planck, transmittance, Schwarzschild RTE
-├── Sensor/        viewing geometry, ILS, IASI forward model
+├── Sensor/        viewing geometry, ILS, sounder presets, forward model
+├── Estimation/    Jacobians, optimal estimation, covariances, state vectors
 ├── Parallel/      backend detection (CPU / CUDA / Metal)
 └── Utils/         wavenumber grid, interpolation
 test/              unit tests

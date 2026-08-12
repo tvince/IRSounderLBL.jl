@@ -120,7 +120,10 @@ export partial_column_basis, dfs_partition, vmr_range
 export Jacobian, finite_difference_jacobian, default_fd_steps, column
 export analytic_jacobian
 export optimal_estimation, RetrievalResult, exclude_channels
-export robust_estimation, RobustRetrievalResult
+# robust_estimation / RobustRetrievalResult are deliberately NOT exported: the
+# adaptive-Se work still needs validation, and an export is a public-API promise
+# that registration makes expensive to walk back. Reach them as
+# IRSounderLBL.robust_estimation until they are tested and documented.
 export apodized_measurement_covariance, scene_nedt, scene_measurement_covariance
 export build_sa
 export dB_dT
