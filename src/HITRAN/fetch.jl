@@ -86,8 +86,10 @@ function fetch_hitran_api(mol_id::Int, iso_id::Int,
     isnothing(global_id) && error("Unknown (mol_id=$mol_id, iso_id=$iso_id). Check HITRAN_GLOBAL_ISO_ID table.")
 
     base_url = "https://hitran.org/lbl/api"
-    params   = "?iso_ids_list=$global_id&numin=$ν_min&numax=$ν_max&api_key=$key"
-    url      = base_url * params
+    query    = "?iso_ids_list=$global_id&numin=$ν_min&numax=$ν_max"
+    url      = base_url * query * "&api_key=$key"
+    # Same URL with the key elided, for anything that gets logged or thrown.
+    safe_url = base_url * query * "&api_key=<redacted>"
 
     mktempdir() do tmpdir
         tmpfile = joinpath(tmpdir, "hitran.par")
@@ -101,7 +103,7 @@ function fetch_hitran_api(mol_id::Int, iso_id::Int,
         # resp is either a Response or a RequestError (on truncation)
         http_status = resp isa Downloads.Response ? resp.status : resp.response.status
         if http_status ∉ (200, 206)
-            error("HITRAN API returned HTTP $http_status\nURL: $url")
+            error("HITRAN API returned HTTP $http_status\nURL: $safe_url")
         end
         # Truncated transfers (e.g. missing last few bytes) are acceptable
         if resp isa Downloads.RequestError

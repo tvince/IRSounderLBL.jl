@@ -90,6 +90,9 @@ function _download_linelist_species(dir::AbstractString, sp::GasSpecies, isos,
                 continue
             end
         end
+        # Checked here, not up front: a user handed a populated data directory
+        # has nothing to fetch and should not need a key at all.
+        hitran_api_key_available() || error(_NO_KEY_MESSAGE)
         dest = joinpath(dir, rel)
         mkpath(dirname(dest))
         verbose && @info "fetching line list" species = SPECIES_NAME[sp] isotopologue = iso ν = (ν_min, ν_max)
@@ -133,7 +136,9 @@ end
                        ν_min, ν_max, force = false, verbose = true) -> String
 
 Fetch HITRAN line lists via the LBL API into `dir`, following the on-disk naming
-[`load_linelist`](@ref) expects. Requires `ENV["HITRAN_API_KEY"]`.
+[`load_linelist`](@ref) expects. Requires `ENV["HITRAN_API_KEY"]` — but only if
+something actually needs fetching, so a fully populated data directory works
+with no key.
 
 Usually reached through [`download_data`](@ref)`(:linelists)`. Defaults to the
 15 µm working set (see module docstring); pass `ν_min`/`ν_max`/`species` to widen.
@@ -153,7 +158,6 @@ function download_linelists(; dir::AbstractString = data_download_dir(),
                             ν_max::Float64 = LINELIST_DEFAULT_ν[2],
                             force::Bool = false,
                             verbose::Bool = true)
-    hitran_api_key_available() || error(_NO_KEY_MESSAGE)
     mkpath(dir)
     entries = Tuple{String,Int}[]
     for (sp, isos) in species
