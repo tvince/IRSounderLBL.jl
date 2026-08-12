@@ -58,6 +58,13 @@ const HITRAN_GLOBAL_ISO_ID = Dict{Tuple{Int,Int}, Int}(
     (11,1)=>52,(11,2)=>53,
 )
 
+# Byte count from a libcurl short-transfer message ("end of response with N
+# bytes missing"), or `nothing` if the message has no such count.
+function _missing_bytes(message::AbstractString)
+    m = match(r"(\d+) bytes missing", message)
+    return isnothing(m) ? nothing : parse(Int, m.captures[1])
+end
+
 """
     fetch_hitran_api(mol_id, iso_id, ν_min, ν_max;
                      outfile=nothing, api_key=nothing) -> HITRANLinelist
@@ -105,9 +112,25 @@ function fetch_hitran_api(mol_id::Int, iso_id::Int,
         if http_status ∉ (200, 206)
             error("HITRAN API returned HTTP $http_status\nURL: $safe_url")
         end
-        # Truncated transfers (e.g. missing last few bytes) are acceptable
+        # The LBL API declares a Content-Length that counts each 160-character
+        # record as ending in CRLF, but serves bare LF, so libcurl reports every
+        # complete transfer as short by exactly one byte per record. Recognise
+        # that signature and stay quiet; anything else is a real truncation.
         if resp isa Downloads.RequestError
-            @warn "Download truncated ($(resp.message)); partial data will be used"
+            nrec, ragged = open(tmpfile, "r") do io
+                n = 0; bad = false
+                for rec in eachline(io)
+                    n += 1
+                    isempty(rec) || length(rec) == 160 || (bad = true)
+                end
+                (n, bad)
+            end
+            shortfall = _missing_bytes(resp.message)
+            if !ragged && !isnothing(shortfall) && shortfall == nrec
+                @debug "Content-Length counted CRLF terminators; all $nrec records complete"
+            else
+                @warn "Download truncated ($(resp.message)); partial data will be used" records = nrec ragged_records = ragged
+            end
         end
 
         if !isnothing(outfile)

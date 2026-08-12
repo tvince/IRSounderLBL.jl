@@ -74,7 +74,19 @@ using Aqua
         # hitran_api_key_available reflects ENV without leaking the key.
         withenv("HITRAN_API_KEY" => nothing) do
             @test !hitran_api_key_available()
-            @test_throws ErrorException download_linelists()      # no network touched
+            # Something actually missing must error before any network call. The
+            # ν-range is deliberately absurd so no search-path root can satisfy
+            # it — otherwise this test passes or fails on machine state (whether
+            # anyone has run download_data(:linelists) here yet).
+            @test_throws ErrorException download_linelists(;
+                dir = mktempdir(), species = [CO2 => 1:1],
+                ν_min = 1234.5, ν_max = 1234.6, verbose = false)
+            # Conversely, a fully populated data directory needs no key at all:
+            # nothing is fetched, so nothing needs authenticating.
+            if all(!isnothing(find_data_file(IRSounderLBL._linelist_file(linelist_base(sp), iso)))
+                   for (sp, isos) in IRSounderLBL.LINELIST_DEFAULT_SPECIES for iso in isos)
+                @test download_linelists(; verbose = false) isa String
+            end
         end
         withenv("HITRAN_API_KEY" => "dummy") do
             @test hitran_api_key_available()
