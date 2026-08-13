@@ -19,13 +19,20 @@ Research code, validated against ARTS 2.6 on the IASI spectral range
 - HITRAN line-by-line absorption (HITRAN 2020 API + local `.par` loader)
 - Three Voigt-profile evaluators — `Weideman`, `PseudoVoigt`, `FullFaddeeva` (default)
 - TIPS-2024 partition functions (46 isotopologues)
-- MT-CKD 4.3 H₂O self + foreign continuum (tabulated AER data)
+- MT-CKD 4.3 H₂O self + foreign continuum (tabulated AER data) and CO₂ continuum
 - HITRAN CIA tables for CO₂, N₂, O₂
 - CO₂ line mixing — first-order (Niro/Lamouroux VP_Y) and full-matrix (VP_W)
 - Schwarzschild layer-by-layer RTE solver
 - IASI instrument response: Gaussian apodization (L1C default) or Norton-Beer
 - Off-nadir geometry: scan-angle → local-zenith conversion
 - Standard atmospheres: US Standard, Tropical, Subarctic; 43- and 50-level AFGL
+- Analytic Jacobians (temperature, VMR, surface), validated against finite
+  differences including continuum and line-mixing coupling
+- Optimal-estimation retrieval (`optimal_estimation`) with averaging kernels,
+  DOF and the Rodgers error budget; a-priori covariance builder (`build_sa`);
+  reduced VMR bases (`ColumnScale`, `PartialColumns`)
+- Real-data ingest: IASI L1C granules (`read_iasi_l1c`) and EUMETSAT instrument
+  noise covariance as retrieval Sₑ (`read_iasi_ncm`)
 
 ## Install
 
@@ -39,31 +46,114 @@ Requires Julia ≥ 1.10. A `HITRAN_API_KEY` environment variable is needed
 if you want to fetch lines via `fetch_hitran_api`; otherwise local `.par`
 files work standalone.
 
+## Getting the data
+
+Spectroscopic data that HITRAN does not allow us to redistribute is fetched
+rather than bundled. Start here — this prints a checklist of what you have, what
+you're missing, and the exact next step for each gap:
+
+```julia
+using IRSounderLBL
+data_status()
+```
+
+**One-time setup:**
+
+```julia
+download_data()              # HITRAN CIA tables, ~12 MB, SHA-256 verified, no key
+download_data(:linelists)    # HITRAN line lists — needs a free API key (below)
+```
+
+Then the forward model runs:
+
+```julia
+prof = afgl_us_standard_50lev()
+ν, R, BT = forward_model(prof, default_linelists())
+```
+
+### HITRAN API key
+
+Line lists come from the HITRAN API, which needs a free key:
+
+1. register at <https://hitran.org/register/>
+2. copy your key from <https://hitran.org/profile/>
+3. `export HITRAN_API_KEY=<your key>` in your shell — never in the repo
+
+`download_data(:linelists)` defaults to the **15 µm working set** (CO₂ isotopologues
+1–4, H₂O 1–3, 620–825 cm⁻¹ — the ν₂ band the package is validated against, plus the
+±25 cm⁻¹ line-wing margin). Widen it when you need to:
+
+```julia
+download_data(:linelists; ν_min = 620.0, ν_max = 2785.0,
+              species = [CO2 => 1:4, H2O => 1:3, O3 => 1:4])   # full IASI range
+```
+
+Unlike the CIA tables, line lists carry no pinnable checksum — HITRAN serves the
+current release and revises it over time. Since a retrieval's results depend on the
+line list behind it, each download appends to `linelists/PROVENANCE.md` recording
+the query, the date, and the line counts.
+
+### Where it goes
+
+Downloads land in a package-owned scratch space by default; `IRSOUNDER_DATA_DIR` or
+`set_data_dir!(path)` overrides that. Resolution order is override → `<pkg>/data` →
+scratch, so a copy you drop in `data/` always wins.
+
+### Optional data we cannot fetch for you
+
+`data_status()` also reports these, with links — they sit behind accounts or are
+scene-specific:
+
+| Data | Needed for | Source |
+|---|---|---|
+| CO₂ line-mixing (HITRAN2020) | `VPYLineMixing`, `VPWLineMixing` | [hitran.org/supplementary](https://hitran.org/supplementary/) → Line-Mixing (login) |
+| IASI L1C granules | real-radiance retrievals | [NOAA CLASS](https://www.class.noaa.gov/) |
+| EUMETSAT IASI NCM | instrument noise covariance as `Se` | [EUMETSAT Data Store](https://data.eumetsat.int/) |
+
+Without the CIA tables, `co2_cia`/`n2_cia`/`o2_cia` warn once and return zeros and
+everything else works normally. Without a line list, the forward model cannot run.
+
 ## Quick start
+
+Once `download_data(:linelists)` has run (see [Getting the data](#getting-the-data)):
 
 ```julia
 using IRSounderLBL
 
-ll = load_hitran_par("data/co2_645_700.par"; ν_min=645.0, ν_max=700.0)
-prof = us_standard_atmosphere()
-linelists = Dict{GasSpecies, HITRANLinelist}(CO2 => ll)
-
-ν, R, BT = iasi_forward_model(prof, linelists)
+prof = afgl_us_standard_50lev()
+ν, R, BT = forward_model(prof, default_linelists())
 ```
 
-Returns the IASI channel grid `ν` (cm⁻¹), spectral radiance `R`
+`default_linelists()` loads whatever `download_data(:linelists)` installed. To use
+your own `.par` files instead:
+
+```julia
+ll = load_linelist("path/to/co2_645_700", 1:4; ν_min=620.0, ν_max=825.0)
+ν, R, BT = forward_model(prof, Dict{GasSpecies, HITRANLinelist}(CO2 => ll))
+```
+
+Returns the sensor channel grid `ν` (cm⁻¹), spectral radiance `R`
 (W m⁻² sr⁻¹ (cm⁻¹)⁻¹), and brightness temperature `BT` (K).
 
-Common keyword arguments to `iasi_forward_model`:
+Common keyword arguments to `forward_model`:
 
-- `iasi::IASIInstrument` — defaults to standard IASI L1C
+- `sounder::Sounder` — defaults to `IASIInstrument()`; also `IASINGInstrument()`,
+  `CrISInstrument()`, `MTGIRSInstrument()`
 - `geom::ViewingGeometry` — `nadir_geometry()` or use `scan_angle_to_local_zenith`
 - `T_sfc`, `ε_sfc` — surface temperature override and emissivity
 - `apply_continuum::Bool` — MT-CKD + CIA on/off
-- `with_ils::Bool` — convolve with the IASI ILS
+- `with_ils::Bool` — convolve with the instrument ILS
 - `apodization::Symbol` — `:gaussian` (L1C) or `:norton_beer`
 - `line_mixing` — `VPYLineMixing(...)` or `VPWLineMixing(...)`
-- `high_res_factor::Int` — internal grid oversampling (default 4)
+- `internal_dnu::Float64` — absolute internal monochromatic grid spacing in cm⁻¹
+  (default `0.001`), auto-adapting to any sensor Δν. Converges ILS-convolved BT
+  to ≤6 mK RMS against a 0.0005 reference
+
+The older `iasi_forward_model` / `iasi_grid` names remain as aliases, and
+`high_res_factor` still overrides `internal_dnu` as a legacy escape hatch — but
+it is oversampling relative to the *sensor* Δν, so it does not adapt across
+instruments. The former default of 4 (0.0625 cm⁻¹ for IASI) is ≈1 K off in
+dense bands; prefer `internal_dnu`.
 
 See `smoke_test.jl` and `scripts/` for end-to-end examples including
 line-mixing runs and ARTS comparison drivers.
@@ -87,7 +177,8 @@ src/
 ├── HITRAN/        linelist I/O, partition functions, broadening
 ├── CrossSections/ Voigt, continuum, line mixing, optical depth
 ├── Solver/        Planck, transmittance, Schwarzschild RTE
-├── Sensor/        viewing geometry, ILS, IASI forward model
+├── Sensor/        viewing geometry, ILS, sounder presets, forward model
+├── Estimation/    Jacobians, optimal estimation, covariances, state vectors
 ├── Parallel/      backend detection (CPU / CUDA / Metal)
 └── Utils/         wavenumber grid, interpolation
 test/              unit tests
@@ -98,10 +189,38 @@ scripts/           validation drivers, ARTS comparison, plotting
 
 - HITRAN 2020 — Gordon et al., JQSRT 277 (2022)
 - TIPS-2024 v1.2 — Gamache et al., JQSRT 345 (2025)
-- MT-CKD 4.3 — Mlawer et al. (AER); data files under `data/mtckd/`
+- MT-CKD 4.3 — Mlawer et al. (AER); data files under `data/mt_ckd_h2o/` and `data/mt_ckd_co2/`
 - Niro line mixing — Niro et al., JQSRT 88 (2004)
 - Norton-Beer apodization — Norton & Beer, JOSA 66 (1976)
 
+## Data and third-party licenses
+
+The MIT license below covers the **software only**. It does not extend to the
+spectroscopic and atmospheric reference data the package reads at runtime, each
+of which carries its provider's own usage and citation terms. See the
+[`NOTICE`](NOTICE) file for the full breakdown; the short version:
+
+| Data | Source | Redistribution | You must cite |
+|---|---|---|---|
+| Line lists (`*.par`), CIA (`*.cia`) | [HITRAN](https://hitran.org) | **No** — fetch it yourself | HITRAN2020; Karman et al. 2019 |
+| TIPS-2024 partition sums | Gamache et al. | with attribution | Gamache et al. 2025 |
+| MT-CKD continuum tables | AER ([MT_CKD](https://github.com/AER-RC/MT_CKD)) | with attribution | Mlawer et al. 2012 |
+| AFGL standard atmospheres | AFGL | freely | Anderson et al. 1986 |
+| CO₂ line-mixing data | Lamouroux/Hartmann | with attribution | Lamouroux et al. 2015 |
+
+**HITRAN data is not redistributable** and you are responsible for obtaining it
+from hitran.org under HITRAN's data-use policy and for meeting its citation
+requirement. See [`data/cia/SOURCE.md`](data/cia/SOURCE.md) for the exact files
+and download steps.
+
+## Citing this software
+
+If you use IRSounderLBL.jl in published work, please cite it via the
+[`CITATION.cff`](CITATION.cff) file (GitHub's "Cite this repository" button), in
+addition to the underlying data sources above.
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Applies to the source code only; see
+[Data and third-party licenses](#data-and-third-party-licenses) above and
+[`NOTICE`](NOTICE) for data terms.

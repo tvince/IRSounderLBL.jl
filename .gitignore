@@ -9,17 +9,22 @@ data/**
 !data/**/
 # ... and keep provenance/docs that explain where the (untracked) data came from.
 !data/**/SOURCE.md
-# ... and keep the small, static load-time tables the package needs to precompile,
-# load, and pass its tests on a fresh clone / CI (MT-CKD continua + HITRAN CIA +
-# the AFGL reference profile; ~12.6 MB, never-changing release snapshots). The bulk
-# data (line lists, line-mixing, broadening, LBLRTM refs) stays ignored; fetch it
-# via download_data() / Julia Artifacts. See data/cia/SOURCE.md for HITRAN provenance.
+# ... and keep the small, static, REDISTRIBUTABLE tables the package needs to load
+# and pass its tests on a fresh clone / CI (MT-CKD continua + the AFGL reference
+# profiles; ~0.6 MB, never-changing release snapshots).
+#
+# The HITRAN CIA tables are deliberately NOT here: HITRAN's terms forbid
+# redistribution, so `download_data()` fetches them at runtime into a Scratch space
+# (see src/Utils/datasets.jl and data/cia/SOURCE.md). The bulk data (line lists,
+# line-mixing, broadening, LBLRTM refs) stays ignored for size reasons.
 !data/afgl_us_standard_50lev.csv
+!data/afgl_tropical_50lev.csv
+!data/afgl_midlatitude_summer_50lev.csv
+!data/afgl_midlatitude_winter_50lev.csv
+!data/afgl_subarctic_summer_50lev.csv
+!data/afgl_subarctic_winter_50lev.csv
 !data/mt_ckd_h2o/mt_ckd43_h2o_coeffs.csv
 !data/mt_ckd_co2/mt_ckd_co2_coeffs.csv
-!data/cia/CO2-CO2_2024.cia
-!data/cia/N2-N2_2021.cia
-!data/cia/O2-O2_2024.cia
 
 # Stray history files
 .Rhistory

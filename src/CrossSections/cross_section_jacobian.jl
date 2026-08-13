@@ -55,6 +55,64 @@ shortcut as the forward kernel (`|x| > x_far` → `H = y/(√π(x²+y²))`).
     return K, Hx, Hy
 end
 
+# ── KernelAbstractions grad kernel ───────────────────────────────────────────
+#
+# Vectorized companion of `voigt_cross_section_kernel!` (voigt.jl) that computes
+# the cross section AND its (T, p, vmr_self) derivatives in one Faddeeva pass. One
+# work-item per grid point; four output arrays (σ, dT, dp, dv). Windowing uses the
+# same `_lower_bound`/`_upper_bound` binary search on the sorted line centres, so σ
+# matches `compute_voigt_cross_sections` bit-for-bit. CPU/Float64 only — the body
+# calls `_voigt_H_and_grad`, whose complex `erfcx` is not Metal/Float32-safe (this
+# is already the Jacobian regime). Per-line arrays are precomputed on the host,
+# mirroring the σ-only path. See `compute_voigt_cross_sections_grad` for the maths.
+@kernel function voigt_grad_kernel!(σ, dT, dp, dv,
+                                    ν_grid,
+                                    lν0, lf, ldf, ly, ldyT, ldyp, ldyv,
+                                    ldν0p, ldν0v, lSn, ldSnT, lHc, ldHcT, ldHcp, ldHcv,
+                                    cutoff, x_far)
+    i   = @index(Global, Linear)
+    ν   = ν_grid[i]
+    n_L = length(lν0)
+
+    # Lines sorted by ν0; window to [ν-cutoff, ν+cutoff] (⇒ |Δν| ≤ cutoff).
+    j_lo = _lower_bound(lν0, ν - cutoff, n_L)
+    j_hi = _upper_bound(lν0, ν + cutoff, n_L)
+
+    invc  = 1.0 / cutoff
+    invc2 = invc * invc
+    acc = 0.0; aT = 0.0; ap = 0.0; av = 0.0
+    @inbounds for j in j_lo:j_hi
+        Δν = ν - lν0[j]
+        f  = lf[j]
+        x  = Δν * f
+        H, Hx, Hy = _voigt_H_and_grad(x, ly[j], x_far)
+        # ∂x: T via f, p/vs via the centre shift (∂x/∂{p,vs} = −∂ν0·f).
+        dHt = Hx * (Δν * ldf[j])   + Hy * ldyT[j]
+        dHp = Hx * (-ldν0p[j] * f) + Hy * ldyp[j]
+        dHv = Hx * (-ldν0v[j] * f) + Hy * ldyv[j]
+        pedfac = 2.0 - (Δν * invc)^2
+        # Pedestal prefactor moves with ν0 for p/vs (Δν depends on the centre).
+        dpedfac_p = 2.0 * Δν * ldν0p[j] * invc2
+        dpedfac_v = 2.0 * Δν * ldν0v[j] * invc2
+        Hcj   = lHc[j]
+        dpedT = pedfac * ldHcT[j]
+        dpedp = dpedfac_p * Hcj + pedfac * ldHcp[j]
+        dpedv = dpedfac_v * Hcj + pedfac * ldHcv[j]
+        Hmped = H - pedfac * Hcj
+        Snj   = lSn[j]
+        acc += Snj * Hmped
+        aT  += ldSnT[j] * Hmped + Snj * (dHt - dpedT)
+        ap  += Snj * (dHp - dpedp)
+        av  += Snj * (dHv - dpedv)
+    end
+    # `max(·,0)` clamp: zero σ and every derivative where the sum is clamped.
+    if acc > 0.0
+        σ[i] = acc; dT[i] = aT; dp[i] = ap; dv[i] = av
+    else
+        σ[i] = 0.0; dT[i] = 0.0; dp[i] = 0.0; dv[i] = 0.0
+    end
+end
+
 """
     compute_voigt_cross_sections_dT(ν_grid, linelist, T, p_atm;
                                     vmr_self=0.0, cutoff=25.0, x_far=_X_FAR)
@@ -159,46 +217,26 @@ function compute_voigt_cross_sections_grad(ν_grid::WavenumberGrid,
         dHcv[j] = Hcy * dyv[j]
     end
 
-    σ  = zeros(Float64, n_ν)
-    dT = zeros(Float64, n_ν)
-    dp = zeros(Float64, n_ν)
-    dv = zeros(Float64, n_ν)
-    invc = 1.0 / cutoff
-    invc2 = invc * invc
-    @inbounds for i in 1:n_ν
-        ν = ν_grid.ν[i]
-        acc = 0.0; aT = 0.0; ap = 0.0; av = 0.0
-        for j in 1:n_L
-            Δν = ν - ν0[j]
-            abs(Δν) > cutoff && continue
-            f = f_arr[j]
-            x = Δν * f
-            H, Hx, Hy = _voigt_H_and_grad(x, y_arr[j], x_far)
-            # ∂x: T via f, p/vs via the centre shift (∂x/∂{p,vs} = −∂ν0·f).
-            dHt = Hx * (Δν * df_arr[j]) + Hy * dyT[j]
-            dHp = Hx * (-dν0p[j] * f)   + Hy * dyp[j]
-            dHv = Hx * (-dν0v[j] * f)   + Hy * dyv[j]
-            pedfac = 2.0 - (Δν * invc)^2
-            # Pedestal prefactor moves with ν0 for p/vs (Δν depends on the centre).
-            dpedfac_p = 2.0 * Δν * dν0p[j] * invc2
-            dpedfac_v = 2.0 * Δν * dν0v[j] * invc2
-            Hcj = Hc[j]
-            dpedT = pedfac * dHcT[j]
-            dpedp = dpedfac_p * Hcj + pedfac * dHcp[j]
-            dpedv = dpedfac_v * Hcj + pedfac * dHcv[j]
-            Hmped = H - pedfac * Hcj
-            Snj = Sn[j]
-            acc += Snj * Hmped
-            aT  += dSnT[j] * Hmped + Snj * (dHt - dpedT)
-            ap  += Snj * (dHp - dpedp)
-            av  += Snj * (dHv - dpedv)
-        end
-        if acc > 0.0
-            σ[i] = acc; dT[i] = aT; dp[i] = ap; dv[i] = av
-        end   # clamped: σ = 0 and all derivatives 0
-    end
+    # KernelAbstractions launch (CPU/Float64) — mirrors compute_voigt_cross_sections.
+    # The KA CPU backend multithreads across grid points; the old scalar loop ran on
+    # a single thread and scanned every line per grid point (no windowing).
+    backend = CPU()
+    σ  = KernelAbstractions.zeros(backend, Float64, n_ν)
+    dT = KernelAbstractions.zeros(backend, Float64, n_ν)
+    dp = KernelAbstractions.zeros(backend, Float64, n_ν)
+    dv = KernelAbstractions.zeros(backend, Float64, n_ν)
+    ν_d = KernelAbstractions.allocate(backend, Float64, n_ν)
+    copyto!(ν_d, ν_grid.ν)
+    todev(v) = (d = KernelAbstractions.allocate(backend, Float64, length(v)); copyto!(d, v); d)
+    kernel! = voigt_grad_kernel!(backend, 256)
+    kernel!(σ, dT, dp, dv, ν_d,
+            todev(ν0), todev(f_arr), todev(df_arr), todev(y_arr),
+            todev(dyT), todev(dyp), todev(dyv), todev(dν0p), todev(dν0v),
+            todev(Sn), todev(dSnT), todev(Hc), todev(dHcT), todev(dHcp), todev(dHcv),
+            cutoff, x_far; ndrange = n_ν)
+    KernelAbstractions.synchronize(backend)
 
-    return (σ=σ, dT=dT, dp=dp, dself=dv)
+    return (σ=Array(σ), dT=Array(dT), dp=Array(dp), dself=Array(dv))
 end
 
 # ── Cross-section gradient with optional line mixing (roadmap §6.4) ───────────
@@ -218,11 +256,15 @@ const _LM_GRAD_DT = 0.02      # K, central-FD step for ∂Δσ/∂T
 const _LM_GRAD_DP_REL = 1e-4  # relative central-FD step for ∂Δσ/∂p_atm
 
 # nothing / non-LM model → the analytic Voigt grad (exact, one Faddeeva pass).
+# `need_p` is accepted (and ignored) for call-site parity: the analytic dp is a
+# free byproduct of the single Faddeeva pass.
 function _species_cross_section_grad(::Nothing, sp::GasSpecies,
                                      ν_grid::WavenumberGrid, ll::HITRANLinelist,
                                      T::Float64, p_atm::Float64;
                                      vmr_self::Float64 = 0.0, cutoff::Float64 = 25.0,
-                                     x_far::Float64 = _X_FAR, backend = nothing)
+                                     lm_cutoff::Float64 = cutoff,
+                                     x_far::Float64 = _X_FAR, backend = nothing,
+                                     need_p::Bool = true)
     compute_voigt_cross_sections_grad(ν_grid, ll, T, p_atm;
                                       vmr_self=vmr_self, cutoff=cutoff, x_far=x_far)
 end
@@ -231,7 +273,9 @@ function _species_cross_section_grad(lm::AbstractLineMixing, sp::GasSpecies,
                                      ν_grid::WavenumberGrid, ll::HITRANLinelist,
                                      T::Float64, p_atm::Float64;
                                      vmr_self::Float64 = 0.0, cutoff::Float64 = 25.0,
-                                     x_far::Float64 = _X_FAR, backend = nothing)
+                                     lm_cutoff::Float64 = cutoff,
+                                     x_far::Float64 = _X_FAR, backend = nothing,
+                                     need_p::Bool = true)
     # Species not handled by this LM model fall through to the analytic Voigt grad.
     sp == lm.data.species || return compute_voigt_cross_sections_grad(ν_grid, ll, T, p_atm;
                                           vmr_self=vmr_self, cutoff=cutoff, x_far=x_far)
@@ -240,19 +284,32 @@ function _species_cross_section_grad(lm::AbstractLineMixing, sp::GasSpecies,
                                           vmr_self=vmr_self, cutoff=cutoff, x_far=x_far)
 
     # LM perturbation at the centre and its central-FD derivatives in (T, p).
-    Δσ0 = _lm_perturbation(lm, ν_grid, T, p_atm; cutoff=cutoff)
+    # The centre and both ∂p calls share T, so the O(n²)-per-band Y(T) / W(T)
+    # build is done ONCE and reused (lever 3); only the two ∂T calls rebuild.
+    # Fix A: restrict the LM path to isotopologues present in the Voigt baseline.
+    isotopes = _linelist_isotopes(ll)
+    cache = _lm_T_cache(lm, T)
+    Δσ0 = _lm_perturbation(lm, ν_grid, T, p_atm; cutoff=lm_cutoff, isotopes=isotopes, cache=cache)
     hT  = _LM_GRAD_DT
-    dΔT = (_lm_perturbation(lm, ν_grid, T + hT, p_atm; cutoff=cutoff) .-
-           _lm_perturbation(lm, ν_grid, T - hT, p_atm; cutoff=cutoff)) ./ (2hT)
-    hp  = max(p_atm, 1e-6) * _LM_GRAD_DP_REL
-    dΔp = (_lm_perturbation(lm, ν_grid, T, p_atm + hp; cutoff=cutoff) .-
-           _lm_perturbation(lm, ν_grid, T, p_atm - hp; cutoff=cutoff)) ./ (2hp)
+    dΔT = (_lm_perturbation(lm, ν_grid, T + hT, p_atm; cutoff=lm_cutoff, isotopes=isotopes) .-
+           _lm_perturbation(lm, ν_grid, T - hT, p_atm; cutoff=lm_cutoff, isotopes=isotopes)) ./ (2hT)
+    # `need_p=false` (state has no pressure/VMR component consuming ∂σ/∂p —
+    # `analytic_jacobian` reads `gr.dp` only when coupling a retrieved VMR):
+    # skip the two ∂p perturbation calls; the returned `dp` is then the Voigt
+    # baseline's analytic ∂σ/∂p WITHOUT the LM term and must not be consumed.
+    dΔp = if need_p
+        hp = max(p_atm, 1e-6) * _LM_GRAD_DP_REL
+        (_lm_perturbation(lm, ν_grid, T, p_atm + hp; cutoff=lm_cutoff, isotopes=isotopes, cache=cache) .-
+         _lm_perturbation(lm, ν_grid, T, p_atm - hp; cutoff=lm_cutoff, isotopes=isotopes, cache=cache)) ./ (2hp)
+    else
+        nothing
+    end
 
     # Total cross section with the forward's max(σ_voigt + Δσ, 0) clamp; the
     # derivatives are the summed sensitivities, zeroed wherever the total is clamped.
     σ  = g.σ .+ Δσ0
     dT = g.dT .+ dΔT
-    dp = g.dp .+ dΔp
+    dp = dΔp === nothing ? copy(g.dp) : g.dp .+ dΔp
     @inbounds for i in eachindex(σ)
         if σ[i] <= 0.0
             σ[i] = 0.0; dT[i] = 0.0; dp[i] = 0.0

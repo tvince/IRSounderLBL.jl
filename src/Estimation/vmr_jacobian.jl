@@ -152,7 +152,8 @@ configuration mirrors `iasi_forward_model` and is run with the cutoff-freezing p
 function analytic_jacobian(prof::AtmosphericProfile,
                            linelists::Dict{GasSpecies, HITRANLinelist},
                            spec::StateVectorSpec;
-                           iasi::IASIInstrument  = IASIInstrument(),
+                           sounder::Union{Sounder, Nothing} = nothing,
+                           iasi::Sounder         = IASIInstrument(),
                            geom::ViewingGeometry = nadir_geometry(),
                            T_sfc::Union{Float64, Nothing} = nothing,
                            ε_sfc::Float64        = 1.0,
@@ -160,6 +161,7 @@ function analytic_jacobian(prof::AtmosphericProfile,
                            internal_dnu::Union{Float64, Nothing} = 0.001,
                            high_res_factor::Union{Int, Nothing}  = nothing,
                            cutoff::Float64       = 25.0,
+                           lm_cutoff::Float64    = cutoff,
                            apply_continuum::Bool = true,
                            continua              = (:h2o, :co2, :co2_cia, :n2, :o2),
                            with_ils::Bool        = true,
@@ -171,6 +173,8 @@ function analytic_jacobian(prof::AtmosphericProfile,
                            backend               = CPU())::Jacobian
     observable in (:bt, :radiance) ||
         error("observable must be :bt or :radiance, got :$observable")
+    # Generic `sounder=` kwarg (mirrors `forward_model`); `iasi=` kept for back-compat.
+    iasi = sounder === nothing ? iasi : sounder
     need_T = spec.include_temperature
     # VMR coupling (∂σ/∂{p,T,vmr_self}·∂{p_cg,T_cg,vmr_self}/∂VMR) and the temperature
     # opacity term both go through `_species_cross_section_grad`, which is line-mixing
@@ -189,7 +193,7 @@ function analytic_jacobian(prof::AtmosphericProfile,
         4
     end
     Δν_hi = iasi.Δν / hrf
-    ν_grid_hi = wavenumber_grid(iasi.ν_min, iasi.ν_max, Δν_hi)
+    ν_grid_hi = _internal_grid(iasi, Δν_hi, with_ils)
     n_ν_hi = ν_grid_hi.n
 
     # ── 2. Layer properties ──────────────────────────────────────────────────
@@ -248,9 +252,13 @@ function analytic_jacobian(prof::AtmosphericProfile,
                 # LM-aware grad: plain Voigt (analytic) for non-LM species/models, and
                 # Voigt baseline + central-FD'd LM perturbation when `line_mixing`
                 # handles this species (roadmap §6.4). σ matches the forward exactly.
+                # need_p: gr.dp is consumed only in the coupling block below, so
+                # for e.g. a T(p)+T_sfc state the LM grad skips its 2 ∂p FD calls.
                 gr = _species_cross_section_grad(line_mixing, sp, ν_grid_hi, ll,
                                                  T_cg_sp, p_cg_atm;
-                                                 vmr_self=vmr_self, cutoff=cutoff, backend=backend)
+                                                 vmr_self=vmr_self, cutoff=cutoff, lm_cutoff=lm_cutoff,
+                                                 backend=backend,
+                                                 need_p=(do_coupling && is_retr))
                 σ_sp = gr.σ
                 if need_T
                     dτdTcg[sp][:, k] .= gr.dT .* coef
@@ -268,7 +276,8 @@ function analytic_jacobian(prof::AtmosphericProfile,
             else
                 σ_sp = _species_cross_section(line_mixing, sp, ν_grid_hi, ll,
                                               T_cg_sp, p_cg_atm;
-                                              vmr_self=vmr_self, cutoff=cutoff, backend=backend)
+                                              vmr_self=vmr_self, cutoff=cutoff, lm_cutoff=lm_cutoff,
+                                              backend=backend)
             end
             contrib = σ_sp .* coef
             τ_layers[:, k] .+= contrib
@@ -383,12 +392,19 @@ function analytic_jacobian(prof::AtmosphericProfile,
     # its v1≈v2 branch), and T_cg = ∂T_cg/∂p_cg·∂p_cg/∂v (0 for :mass_weighted, whose
     # T_cg is VMR-independent). vmr_self moves only for H₂O (vmr_self = vmr_cg).
     dI_hi = Vector{Float64}(undef, n_ν_hi)
-    for (s, r) in spec.vmr_ranges
+    for blk in spec.vmr_blocks
+        s = blk.species
         haskey(τ_sp, s) || continue   # continuum-only species: dominant LBL term is 0
+        r    = blk.range
+        B    = blk.basis              # nothing ⇒ identity (per-level fast path)
         τs   = τ_sp[s]
         vcg  = layers.vmr_cg[s]
         vlev = prof.vmr[s]
         is_h2o = s == H2O
+        # Reduced parameterization: accumulate ∂I/∂θ_m = Σ_j B[j,m]·∂I/∂(log v_j) in the
+        # hi-res domain, then convolve M times (vs n_levels). ILS linearity makes the
+        # projected-then-convolved column identical to convolving each level and summing.
+        Hbuf = B === nothing ? nothing : [zeros(Float64, n_ν_hi) for _ in 1:blk.m]
         gV1 = Vector{Float64}(undef, n_layers); gV2 = similar(gV1)
         gP1 = zeros(Float64, n_layers); gP2 = zeros(Float64, n_layers)
         gT1 = zeros(Float64, n_layers); gT2 = zeros(Float64, n_layers)
@@ -413,7 +429,6 @@ function analytic_jacobian(prof::AtmosphericProfile,
         # chained through the p_mid interpolation weight wM.
         dτc_v = s == H2O ? dτc_dvh2o : (s == CO2 ? dτc_dvco2 : nothing)
         for j in 1:spec.n_levels
-            col = r[j]
             fill!(dI_hi, 0.0)
             # layer k = j (level j is the lower boundary)
             if j <= n_layers && vcg[j] != 0.0
@@ -437,10 +452,25 @@ function analytic_jacobian(prof::AtmosphericProfile,
                 j <= n_layers && (@inbounds @views dI_hi .+= dI_dτ[:, j]   .* dτc_v[:, j]   .* (1.0 - wM[j]))
                 j >= 2        && (@inbounds @views dI_hi .+= dI_dτ[:, j-1] .* dτc_v[:, j-1] .* wM[j-1])
             end
-            colvec = to_channel(dI_hi)
-            # log-VMR: ∂y/∂(log v) = v·∂y/∂v
-            spec.log_vmr && (colvec .*= Float64(vlev[j]))
-            @inbounds K[:, col] .= colvec
+            if B === nothing
+                colvec = to_channel(dI_hi)
+                # log-VMR: ∂y/∂(log v) = v·∂y/∂v
+                spec.log_vmr && (colvec .*= Float64(vlev[j]))
+                @inbounds K[:, r[j]] .= colvec
+            else
+                # ∂I/∂(log v_j) = v_j·∂I/∂v_j (reduced params are always multiplicative-log).
+                vj = Float64(vlev[j])
+                @inbounds for m in 1:blk.m
+                    w = B[j, m]
+                    w == 0.0 && continue
+                    @views Hbuf[m] .+= (w * vj) .* dI_hi
+                end
+            end
+        end
+        if B !== nothing
+            @inbounds for m in 1:blk.m
+                K[:, r[m]] .= to_channel(Hbuf[m])
+            end
         end
     end
 

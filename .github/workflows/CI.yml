@@ -40,6 +40,13 @@ jobs:
         shell: bash
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
+      # The HITRAN CIA tables are not redistributable, so they are not in the repo;
+      # fetch them so the CIA code path is actually exercised. Non-fatal: the tests
+      # degrade gracefully when the data is absent, and a hitran.org outage must not
+      # turn CI red for reasons unrelated to the code.
+      - name: Fetch non-redistributable data (HITRAN CIA)
+        continue-on-error: true
+        run: julia --project=. -e 'using IRSounderLBL; download_data(); data_status()'
       - uses: julia-actions/julia-runtest@v1
 
   # RHEL 10 coverage. GitHub offers no native RHEL runner, so run inside Red Hat's
@@ -63,4 +70,11 @@ jobs:
         shell: bash
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
+      # The HITRAN CIA tables are not redistributable, so they are not in the repo;
+      # fetch them so the CIA code path is actually exercised. Non-fatal: the tests
+      # degrade gracefully when the data is absent, and a hitran.org outage must not
+      # turn CI red for reasons unrelated to the code.
+      - name: Fetch non-redistributable data (HITRAN CIA)
+        continue-on-error: true
+        run: julia --project=. -e 'using IRSounderLBL; download_data(); data_status()'
       - uses: julia-actions/julia-runtest@v1

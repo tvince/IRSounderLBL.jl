@@ -17,6 +17,12 @@ Each set {C0, C2, C4} satisfies C0 + C2 + C4 = 1.
 The apodization function is:
     A(x) = C0 + C2 × (1 − x²)² + C4 × (1 − x²)⁴    |x| ≤ 1
 """
+# Half-width (cm⁻¹) of the truncated ILS kernel built by `ils_kernel`. The kernel
+# is tabulated on ±ceil(ILS_HALFWIDTH_CM/Δν)·Δν; the same value sizes the internal-
+# grid padding (`_internal_grid`) so every requested channel sees full kernel
+# support after convolution. Keep the two in lock-step by referencing this const.
+const ILS_HALFWIDTH_CM = 16.0
+
 const NORTON_BEER_COEFFS = Dict(
     :norton_beer_weak   => (C0=0.384093, C2=0.087577, C4=0.528330),
     :norton_beer_medium => (C0=0.152442, C2=0.136176, C4=0.711382),
@@ -90,8 +96,8 @@ function ils_kernel(Δν::Float64,
         error("Unknown apodization $(apodization); expected :gaussian or one of $(collect(keys(NORTON_BEER_COEFFS)))")
     end
 
-    # Spectral offset grid: cover ±16 cm⁻¹ at Δν spacing
-    n_half = ceil(Int, 16.0 / Δν)
+    # Spectral offset grid: cover ±ILS_HALFWIDTH_CM at Δν spacing
+    n_half = ceil(Int, ILS_HALFWIDTH_CM / Δν)
     δν_arr = collect((-n_half:n_half) .* Δν)
     n_ils  = length(δν_arr)
 

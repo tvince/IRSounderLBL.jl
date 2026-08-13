@@ -162,8 +162,9 @@ Multi-isotopologue convenience: load and merge several `.par` files that share a
 `"\$(base)_iso\$(iso).par"` for the rest (the layout the validation scripts use).
 Each `.par` is cached independently; the merged result is windowed in memory.
 
-Missing files for a given isotopologue are skipped silently; if none are found an
-error is raised.
+If a requested isotopologue's `.par` file is missing an error is raised naming the
+absent file(s), so a silently-dropped isotopologue can never masquerade as a
+successful load.
 
 # Example
 ```julia
@@ -176,13 +177,22 @@ function load_linelist(base::AbstractString, isotopologues;
                        cache::Bool = true,
                        rebuild::Bool = false)
     all_lines = HITRANLine[]
+    missing_files = String[]
     for iso in isotopologues
         fpath = iso == 1 ? "$(base).par" : "$(base)_iso$(iso).par"
-        isfile(fpath) || continue
+        if !isfile(fpath)
+            push!(missing_files, fpath)
+            continue
+        end
         ll = load_linelist(fpath; ν_min, ν_max, cache, rebuild)
         append!(all_lines, ll.lines)
     end
+    isempty(missing_files) ||
+        error("load_linelist: requested isotopologue(s) with no .par file on disk: " *
+              join(missing_files, ", ") *
+              " (base=$(base), isotopologues=$(isotopologues))")
     isempty(all_lines) &&
-        error("No .par files found for base=$(base), isotopologues=$(isotopologues)")
+        error("No lines found for base=$(base), isotopologues=$(isotopologues) " *
+              "(files present but empty in the requested window)")
     return HITRANLinelist(all_lines)
 end

@@ -1,6 +1,7 @@
 module IRSounderLBL
 
 # Utils
+include("Utils/datasets.jl")
 include("Utils/wavenumber_grid.jl")
 include("Utils/interpolation.jl")
 
@@ -14,6 +15,7 @@ include("Atmosphere/standard_atm.jl")
 include("HITRAN/linelist.jl")
 include("HITRAN/fetch.jl")
 include("HITRAN/cache.jl")
+include("HITRAN/bootstrap.jl")
 include("HITRAN/partition.jl")
 include("HITRAN/broadening.jl")
 
@@ -34,7 +36,8 @@ include("Solver/schwarzschild_jacobian.jl")
 include("Sensor/geometry.jl")
 include("Sensor/ils.jl")
 include("Sensor/ils_fft.jl")
-include("Sensor/iasi.jl")
+include("Sensor/sounder.jl")
+include("Sensor/noise_covariance.jl")
 include("Sensor/iasi_l1c.jl")
 
 # Parallel
@@ -47,22 +50,28 @@ include("Estimation/vmr_jacobian.jl")
 include("Estimation/sa_builder.jl")
 include("Estimation/covariance.jl")
 include("Estimation/optimal_estimation.jl")
+include("Estimation/robust_estimation.jl")
 
 # Utils exports
 export WavenumberGrid, wavenumber_grid
+export download_data, data_status, data_available, data_search_path,
+       data_download_dir, find_data_file, find_data_path, set_data_dir!
 
 # Atmosphere exports
 export GasSpecies, HITRAN_MOLECULE_ID, SPECIES_NAME
 export H2O, CO2, O3, N2O, CO, CH4, O2, SO2, NH3
 export AtmosphericProfile, n_levels, species
 export pressure_layers, layer_properties
-export us_standard_atmosphere, tropical_atmosphere, subarctic_atmosphere,
-       afgl_us_standard_50lev
+export us_standard_atmosphere, tropical_atmosphere, subarctic_atmosphere
+export afgl_atmosphere, afgl_us_standard_50lev, afgl_tropical_50lev,
+       afgl_midlatitude_summer_50lev, afgl_midlatitude_winter_50lev,
+       afgl_subarctic_summer_50lev, afgl_subarctic_winter_50lev
 
 # HITRAN exports
 export HITRANLine, HITRANLinelist, filter_linelist
 export load_hitran_par, fetch_hitran_api
 export load_linelist, linelist_cache_dir, clear_linelist_cache, set_linelist_cache_dir!
+export download_linelists, default_linelists, linelist_base, hitran_api_key_available
 export T_REF, partition_function, Q_ratio
 export pressure_broadened_width, temperature_scaled_intensity, pressure_shift
 
@@ -90,10 +99,15 @@ export schwarzschild_rte, schwarzschild_rte_jacobian
 export ViewingGeometry, airmass_factor
 export nadir_geometry, iasi_scan_angles
 export scan_angle_to_local_zenith, iasi_zenith_angles
-export IASIInstrument, iasi_grid
+export Sounder, sounder_grid
+export IASIInstrument, IASINGInstrument, CrISInstrument, MTGIRSInstrument
+export iasi_grid   # deprecated alias for sounder_grid
 export ils_kernel, apply_ils, apply_ils_fft, ILSConvolver, ils_apply!
 export NORTON_BEER_COEFFS, norton_beer_apodization
-export iasi_forward_model
+export forward_model
+export iasi_forward_model   # deprecated alias for forward_model
+export SounderNoiseCovariance, read_iasi_ncm, load_noise_covariance
+export measurement_covariance, subset_channels, to_bt
 export read_iasi_l1c, IASIL1CGranule, nfov, measurement, cloud_fraction, solar_reflection_angle
 
 # Parallel exports
@@ -101,10 +115,16 @@ export ComputeBackend, detect_backend
 
 # Estimation exports
 export StateVectorSpec, pack_state, unpack_state, state_labels
+export VMRParameterization, FullProfile, ColumnScale, PartialColumns
+export partial_column_basis, dfs_partition, vmr_range
 export Jacobian, finite_difference_jacobian, default_fd_steps, column
 export analytic_jacobian
-export optimal_estimation, RetrievalResult
-export apodized_measurement_covariance
+export optimal_estimation, RetrievalResult, exclude_channels
+# robust_estimation / RobustRetrievalResult are deliberately NOT exported: the
+# adaptive-Se work still needs validation, and an export is a public-API promise
+# that registration makes expensive to walk back. Reach them as
+# IRSounderLBL.robust_estimation until they are tested and documented.
+export apodized_measurement_covariance, scene_nedt, scene_measurement_covariance
 export build_sa
 export dB_dT
 

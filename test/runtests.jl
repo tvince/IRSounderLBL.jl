@@ -1,8 +1,123 @@
 using Test
 using IRSounderLBL
 using LinearAlgebra
+using Aqua
 
 @testset "IRSounderLBL.jl" begin
+
+    # ── Aqua.jl package-quality checks ────────────────────────────────────
+    @testset "Aqua quality" begin
+        # ambiguities across the dep tree are noisy and largely out of our
+        # control; the rest (stale deps, compat bounds, exports, piracy, the
+        # weakdep/extension wiring) are what we want enforced.
+        Aqua.test_all(IRSounderLBL; ambiguities = false)
+    end
+
+    # ── Managed data files ────────────────────────────────────────────────
+    @testset "Data files" begin
+        # Search path is non-empty, ends at the download dir, and the in-repo
+        # data dir is on it (that is where the bundled tables live).
+        roots = data_search_path()
+        @test !isempty(roots)
+        @test data_download_dir() in roots
+        @test normpath(joinpath(pkgdir(IRSounderLBL), "data")) in normpath.(roots)
+
+        # Bundled, redistributable tables must resolve on a fresh clone.
+        @test !isnothing(find_data_file("afgl_us_standard_50lev.csv"))
+        @test !isnothing(find_data_file(joinpath("mt_ckd_h2o", "mt_ckd43_h2o_coeffs.csv")))
+        @test !isnothing(find_data_file(joinpath("mt_ckd_co2", "mt_ckd_co2_coeffs.csv")))
+        @test isnothing(find_data_file("no_such_file_anywhere.csv"))
+
+        # Registry integrity: every entry is a real URL with a 64-hex SHA-256, and
+        # a present file must actually match its pin (catches a stale checksum or a
+        # hand-placed wrong file long before it silently corrupts a retrieval).
+        for (group, files) in IRSounderLBL.DATASETS
+            @test !isempty(files)
+            for f in files
+                @test startswith(f.url, "https://")
+                @test occursin(r"^[0-9a-f]{64}$", f.sha256)
+                @test f.bytes > 0
+                path = find_data_file(f.relpath)
+                if !isnothing(path)
+                    @test IRSounderLBL._sha256_file(path) == f.sha256
+                    @test filesize(path) == f.bytes
+                end
+            end
+        end
+
+        # data_available agrees with per-file resolution; unknown groups are false.
+        @test data_available(:cia) ==
+              all(!isnothing(find_data_file(f.relpath)) for f in IRSounderLBL.DATASETS[:cia])
+        @test !data_available(:no_such_dataset)
+        @test_throws ErrorException download_data(:no_such_dataset)
+
+        # Line-list naming must match what load_linelist(base, isos) expects:
+        # iso 1 is "<base>.par", the rest "<base>_iso<n>.par".
+        b = linelist_base(CO2)
+        @test b == joinpath("linelists", "co2_620_825")
+        @test IRSounderLBL._linelist_file(b, 1) == b * ".par"
+        @test IRSounderLBL._linelist_file(b, 4) == b * "_iso4.par"
+        @test linelist_base(H2O; ν_min = 645.0, ν_max = 2760.0) ==
+              joinpath("linelists", "h2o_645_2760")
+        # Every default species has an ASCII filename tag (SPECIES_NAME is Unicode).
+        for (sp, _) in IRSounderLBL.LINELIST_DEFAULT_SPECIES
+            @test haskey(IRSounderLBL._SPECIES_TAG, sp)
+        end
+
+        # Missing line lists must error naming the files, not return a partial set:
+        # a silently-absent isotopologue is a physics error (cf. CO2 iso 4 / 665 cm⁻¹).
+        if !all(!isnothing(find_data_file(IRSounderLBL._linelist_file(linelist_base(sp), iso)))
+                for (sp, isos) in IRSounderLBL.LINELIST_DEFAULT_SPECIES for iso in isos)
+            @test_throws ErrorException default_linelists()
+        end
+
+        # hitran_api_key_available reflects ENV without leaking the key.
+        withenv("HITRAN_API_KEY" => nothing) do
+            @test !hitran_api_key_available()
+            # Something actually missing must error before any network call. The
+            # ν-range is deliberately absurd so no search-path root can satisfy
+            # it — otherwise this test passes or fails on machine state (whether
+            # anyone has run download_data(:linelists) here yet).
+            @test_throws ErrorException download_linelists(;
+                dir = mktempdir(), species = [CO2 => 1:1],
+                ν_min = 1234.5, ν_max = 1234.6, verbose = false)
+            # Conversely, a fully populated data directory needs no key at all:
+            # nothing is fetched, so nothing needs authenticating.
+            if all(!isnothing(find_data_file(IRSounderLBL._linelist_file(linelist_base(sp), iso)))
+                   for (sp, isos) in IRSounderLBL.LINELIST_DEFAULT_SPECIES for iso in isos)
+                @test download_linelists(; verbose = false) isa String
+            end
+        end
+        withenv("HITRAN_API_KEY" => "dummy") do
+            @test hitran_api_key_available()
+        end
+
+        # Manual (account-gated) datasets are advertised with a usable URL.
+        @test !isempty(IRSounderLBL.MANUAL_DATASETS)
+        for m in IRSounderLBL.MANUAL_DATASETS
+            @test occursin("http", m.url)
+            @test !isempty(m.name) && !isempty(m.used_for) && !isempty(m.probe)
+        end
+
+        # data_status is the documented entry point: it must render the whole
+        # checklist without touching the network, whatever is or isn't present.
+        io = IOBuffer()
+        withenv("HITRAN_API_KEY" => nothing) do
+            data_status(io)
+        end
+        s = String(take!(io))
+        @test occursin("BUNDLED", s)
+        @test occursin("AUTOMATIC DOWNLOAD", s)
+        @test occursin("LINE LISTS", s)
+        @test occursin("MANUAL", s)
+        @test occursin("cia", s)
+        @test occursin("Search path", s)
+        # With no key set it must tell the user how to get one.
+        @test occursin("hitran.org/register", s)
+        for m in IRSounderLBL.MANUAL_DATASETS
+            @test occursin(m.name, s)
+        end
+    end
 
     # ── WavenumberGrid ────────────────────────────────────────────────────
     @testset "WavenumberGrid" begin
@@ -36,6 +151,31 @@ using LinearAlgebra
 
         sa = subarctic_atmosphere()
         @test sa.temperature[1] < us.temperature[1]   # subarctic cooler
+    end
+
+    @testset "AFGL 50-level model atmospheres" begin
+        names = (:us_standard, :tropical, :midlatitude_summer,
+                 :midlatitude_winter, :subarctic_summer, :subarctic_winter)
+        atm = Dict(n => afgl_atmosphere(n) for n in names)
+        for (n, a) in atm
+            @test n_levels(a) == 50
+            @test a.pressure[1] > a.pressure[end]         # surface-first
+            for sp in (H2O, CO2, O3, N2O, CH4, CO)
+                @test haskey(a.vmr, sp)
+            end
+            @test a.vmr[CO2][1] ≈ 4.15e-4 rtol=1e-3       # CO2 scaled to 415 ppm surface
+        end
+        # physical ordering of surface temperature
+        @test atm[:tropical].temperature[1] > atm[:us_standard].temperature[1] > atm[:subarctic_winter].temperature[1]
+        # tropical O3: lower column but higher-altitude peak than US standard
+        o3col(a) = sum(a.vmr[O3][1:end-1] .* abs.(diff(a.pressure)))
+        @test o3col(atm[:tropical]) < o3col(atm[:us_standard])   # tropics: lower O3 column
+        # named wrappers agree with the generic form
+        @test afgl_tropical_50lev().temperature == atm[:tropical].temperature
+        @test afgl_us_standard_50lev().temperature == atm[:us_standard].temperature
+        # string form (hyphen or underscore) and error path
+        @test afgl_atmosphere("midlatitude-summer").temperature == atm[:midlatitude_summer].temperature
+        @test_throws ErrorException afgl_atmosphere(:bogus)
     end
 
     @testset "Layer Properties" begin
@@ -503,13 +643,20 @@ using LinearAlgebra
         @test length(k_h2o) == g.n
         @test all(k_h2o .>= 0)
 
-        # CO₂ CIA (HITRAN) should peak in the 1200-1500 cm⁻¹ window
+        # CO₂ CIA (HITRAN) should peak in the 1200-1500 cm⁻¹ window. The HITRAN CIA
+        # tables are not redistributable, so they may be absent (see download_data());
+        # the shape assertion only makes sense when the data is actually there.
         k_co2_cia = co2_cia(g, 4.15e-4, 1013.25, 296.0)
         @test length(k_co2_cia) == g.n
         @test all(k_co2_cia .>= 0)
-        idx_1350 = argmin(abs.(g.ν .- 1350.0))
-        idx_2000 = argmin(abs.(g.ν .- 2000.0))
-        @test k_co2_cia[idx_1350] > k_co2_cia[idx_2000]
+        if data_available(:cia)
+            idx_1350 = argmin(abs.(g.ν .- 1350.0))
+            idx_2000 = argmin(abs.(g.ν .- 2000.0))
+            @test k_co2_cia[idx_1350] > k_co2_cia[idx_2000]
+        else
+            @info "HITRAN CIA data absent — skipping CIA shape test (run download_data())"
+            @test all(iszero, k_co2_cia)      # documented graceful degradation
+        end
 
         # MT-CKD CO₂ continuum: positive, and decays from the ν₂ band toward
         # the window (S peaks near band center).
@@ -1330,6 +1477,139 @@ using LinearAlgebra
         check_lm(VPWLineMixing(relmat; whitelist=Set(["CO2Q"])))         # full-matrix eigendecomp
     end
 
+    # ── ColumnScale reduced parameterization: FD-exact + projection identity ──
+    @testset "ColumnScale reduced VMR parameterization" begin
+        iasi = IASIInstrument(699.0, 703.0, 0.5, 9, 2.0, 0.5)
+        nlev = 6
+        p = collect(range(1000.0, 200.0; length=nlev))
+        T = 288.0 .+ (225.0 - 288.0) .* (1000.0 .- p) ./ 800.0
+        z = (1000.0 .- p) ./ 66.0
+        mkC(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                                   Float32(0.09), Float32(0.08), E, Float32(0.75), Float32(-0.004))
+        ll = Dict(CO2 => HITRANLinelist([mkC(700.40, 2.0e-24, 250.0), mkC(701.30, 1.4e-24, 300.0)]))
+        prof = AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.0e-4, nlev)))
+
+        specF = StateVectorSpec(nlev, [CO2];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+        specC = StateVectorSpec(nlev, [ColumnScale(CO2)];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+
+        # Layout: one param, basis present (vs identity for the full profile).
+        @test specC.n == 1
+        @test length(specF.vmr_ranges[1].second) == nlev
+        @test state_labels(specC) == ["logVMRscale_$(SPECIES_NAME[CO2])"]
+        @test specC.vmr_blocks[1].basis !== nothing && specF.vmr_blocks[1].basis === nothing
+
+        # pack/unpack: θ=0 ⇒ the reference shape; θ ⇒ uniform multiplicative scale.
+        @test pack_state(specC, prof) == [0.0]
+        pr0, _, _ = unpack_state(specC, [0.0], prof)
+        @test pr0.vmr[CO2] ≈ prof.vmr[CO2]
+        prS, _, _ = unpack_state(specC, [log(1.1)], prof)
+        @test prS.vmr[CO2] ≈ 1.1 .* prof.vmr[CO2]
+
+        fmkw = (iasi=iasi, apply_continuum=false, with_ils=true)
+        anF = analytic_jacobian(prof, ll, specF; iasi=iasi, observable=:bt,
+                                apply_continuum=false, with_ils=true)
+        anC = analytic_jacobian(prof, ll, specC; iasi=iasi, observable=:bt,
+                                apply_continuum=false, with_ils=true)
+
+        # Projection identity: a uniform column scale is the sum of the per-level
+        # log-VMR columns (ILS linearity ⇒ project-then-convolve == convolve-then-sum).
+        colsum = vec(sum(anF.K[:, specF.vmr_ranges[1].second]; dims=2))
+        @test size(anC.K, 2) == 1
+        @test maximum(abs.(anC.K[:, 1] .- colsum)) / (maximum(abs.(colsum)) + 1e-30) < 1e-10
+
+        # FD-exact against the reduced state.
+        fdC = finite_difference_jacobian(prof, ll, specC; observable=:bt,
+                  steps=default_fd_steps(specC; δlogvmr=1e-3), fm_kwargs=fmkw)
+        @test maximum(abs.(anC.y0 .- fdC.y0)) < 1e-9
+        @test maximum(abs.(anC.K[:, 1] .- fdC.K[:, 1])) / (maximum(abs.(fdC.K[:, 1])) + 1e-30) < 1e-5
+
+        # Sa reduced block: diagonal σ_col² (independent, no correlation length).
+        Sa = build_sa(specC, prof; σ_col=0.2)
+        @test size(Sa) == (1, 1) && isapprox(Sa[1, 1], 0.04)
+
+        # Mixed spec: full-profile + column in one state vector, ranges contiguous.
+        specM = StateVectorSpec(nlev, [H2O, ColumnScale(CO2)];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+        @test specM.n == nlev + 1
+        @test specM.vmr_ranges[1].second == 1:nlev && specM.vmr_ranges[2].second == (nlev+1):(nlev+1)
+    end
+
+    # ── PartialColumns ("bulk layers") + dfs_partition ────────────────────────
+    @testset "PartialColumns reduced VMR parameterization" begin
+        iasi = IASIInstrument(699.0, 703.0, 0.5, 9, 2.0, 0.5)
+        nlev = 6
+        p = collect(range(1000.0, 200.0; length=nlev))
+        T = 288.0 .+ (225.0 - 288.0) .* (1000.0 .- p) ./ 800.0
+        z = (1000.0 .- p) ./ 66.0
+        mkC(ν0, S, E) = HITRANLine(Int8(2), Int8(1), ν0, S, 1.0,
+                                   Float32(0.09), Float32(0.08), E, Float32(0.75), Float32(-0.004))
+        ll = Dict(CO2 => HITRANLinelist([mkC(700.40, 2.0e-24, 250.0), mkC(701.30, 1.4e-24, 300.0)]))
+        prof = AtmosphericProfile(p, T, z, Dict(CO2 => fill(4.0e-4, nlev)))
+
+        # ── basis builders: partition of unity, correct block count ──
+        Bbox = partial_column_basis(p; n_blocks=3, taper=:boxcar)
+        Bten = partial_column_basis(p; n_blocks=3, taper=:tent)
+        @test size(Bbox) == (nlev, 3) && size(Bten) == (nlev, 3)
+        @test all(≈(1.0), vec(sum(Bbox; dims=2)))          # partition of unity
+        @test all(≈(1.0), vec(sum(Bten; dims=2)))
+        @test all(x -> x == 0.0 || x == 1.0, Bbox)          # boxcar ∈ {0,1}
+        # edges_hPa maps pressure boundaries → contiguous blocks
+        Bed = partial_column_basis(p; edges_hPa=[500.0, 300.0])
+        @test size(Bed, 2) == 3 && all(≈(1.0), vec(sum(Bed; dims=2)))
+        @test_throws ErrorException partial_column_basis(p; n_blocks=2, edges_hPa=[500.0])
+        @test_throws ErrorException partial_column_basis(p; n_blocks=nlev + 1)
+
+        # ── dfs_partition: cut each time ~target DOF accrues ──
+        @test dfs_partition([0.9, 0.4, 0.5, 0.3, 0.7, 0.2]; target_dfs=1.0) == [1:2, 3:5, 6:6]
+        @test dfs_partition([0.1, 0.1, 0.1]; target_dfs=1.0) == [1:3]        # < 1 DOF ⇒ one block
+        @test dfs_partition(fill(1.0, 4); target_dfs=1.0) == [1:1, 2:2, 3:3, 4:4]
+        # from a DFS partition → basis covering all levels
+        Bdfs = partial_column_basis(nlev, dfs_partition([0.9,0.4,0.5,0.3,0.7,0.2]))
+        @test size(Bdfs, 2) == 3 && all(≈(1.0), vec(sum(Bdfs; dims=2)))
+
+        specF = StateVectorSpec(nlev, [CO2];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+        specP = StateVectorSpec(nlev, [PartialColumns(CO2, Bbox)];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+        specT = StateVectorSpec(nlev, [PartialColumns(CO2, Bten)];
+                    include_temperature=false, include_tsfc=false, include_emissivity=false)
+        @test specP.n == 3
+        @test vmr_range(specP, CO2) == 1:3
+        @test_throws ErrorException vmr_range(specP, H2O)
+
+        anF = analytic_jacobian(prof, ll, specF; iasi=iasi, observable=:bt,
+                                apply_continuum=false, with_ils=true)
+        anP = analytic_jacobian(prof, ll, specP; iasi=iasi, observable=:bt,
+                                apply_continuum=false, with_ils=true)
+
+        # boxcar projection identity: block-m column = sum of that block's level columns
+        for (m, blk) in enumerate((1:2, 3:4, 5:6))
+            cs = vec(sum(anF.K[:, blk]; dims=2))
+            @test maximum(abs.(anP.K[:, m] .- cs)) / (maximum(abs.(cs)) + 1e-30) < 1e-10
+        end
+
+        # FD-exact for the tent (overlapping) basis across all block columns
+        fmkw = (iasi=iasi, apply_continuum=false, with_ils=true)
+        anT = analytic_jacobian(prof, ll, specT; iasi=iasi, observable=:bt,
+                                apply_continuum=false, with_ils=true)
+        fdT = finite_difference_jacobian(prof, ll, specT; observable=:bt,
+                  steps=default_fd_steps(specT; δlogvmr=1e-3), fm_kwargs=fmkw)
+        @test maximum(abs.(anT.K .- fdT.K)) / (maximum(abs.(fdT.K)) + 1e-30) < 1e-5
+
+        # unpack: a single block scaled by θ scales exactly those levels
+        θ = zeros(3); θ[2] = log(1.2)
+        prS, _, _ = unpack_state(specP, θ, prof)
+        exp_vmr = copy(prof.vmr[CO2]); exp_vmr[3:4] .*= 1.2
+        @test prS.vmr[CO2] ≈ exp_vmr
+
+        # Sa: N-block diagonal at σ_col²
+        Sa = build_sa(specP, prof; σ_col=0.3)
+        @test size(Sa) == (3, 3) && all(i -> isapprox(Sa[i, i], 0.09), 1:3)
+        @test all(==(0.0), Sa - Diagonal(diag(Sa)))       # independent blocks
+    end
+
     # ── Jacobian Phase 5: optimal-estimation retrieval (synthetic closed loop) ──
     # ── Apodized measurement covariance (IASI L1C, thesis §3.6) ───────────
     @testset "Measurement covariance — apodized Se (IASI L1C)" begin
@@ -1353,6 +1633,26 @@ using LinearAlgebra
         @test all(i -> isapprox(Sv[i,i], σv[i]^2), 1:7)
         Sd = apodized_measurement_covariance(ν, 0.2; fwhm_gauss=0.0)
         @test Sd[1,2] == 0.0 && all(d -> isapprox(d, 0.04), diag(Sd))
+    end
+
+    # ── Scene-specific NEΔT (thesis Eq. 2.3) ──────────────────────────────
+    @testset "Scene NEΔT — Eq. 2.3" begin
+        # at the reference temperature the conversion is the identity
+        @test isapprox(scene_nedt([720.0], [280.0]; nedt_280K=0.25)[1], 0.25; atol=1e-12)
+        # cold scene ⇒ larger BT noise; warm ⇒ smaller; strictly monotone in Tb
+        Tb = [215.0, 240.0, 270.0, 295.0]
+        σ  = scene_nedt(fill(720.0, 4), Tb; nedt_280K=0.25)
+        @test issorted(σ; rev=true)                       # colder → noisier
+        @test σ[1] > 0.4 && σ[end] < 0.25                 # ~0.47 K cold, < ref warm
+        # explicit ratio form: NEΔTₛ = NEΔT_ref · dB_dT(ν,Tref)/dB_dT(ν,Tb)
+        ν0 = 700.0; Tb0 = 230.0
+        @test isapprox(scene_nedt([ν0],[Tb0]; nedt_280K=0.3)[1],
+                       0.3*dB_dT(ν0,280.0)/dB_dT(ν0,Tb0); rtol=1e-12)
+        # per-channel NEΔT_ref vector + vector-driven convenience covariance
+        νv = collect(660.0:0.25:661.0); Tbv = fill(230.0, length(νv))
+        Se = scene_measurement_covariance(νv, Tbv; nedt_280K=0.25)
+        @test issymmetric(Se) && isposdef(Se)
+        @test isapprox(sqrt(Se[1,1]), scene_nedt(νv, Tbv; nedt_280K=0.25)[1]; rtol=1e-12)
     end
 
     @testset "A-priori covariance — build_sa (vertical correlation)" begin
@@ -1502,6 +1802,35 @@ using LinearAlgebra
         rD = optimal_estimation(yA, specA, base, linelists;
                                 xa=[288.0], Sa=reshape([100.0],1,1), Se=SeA_ap, fm_kwargs=fm)
         @test rD.converged && isapprox(rD.x[1], 298.0; atol=0.1)
+
+        # (E) Channel blacklist: exclude_channels + channel_mask.
+        maskE = exclude_channels(rB.ν, (701.5, 705.0))       # drop the upper band
+        @test maskE isa Vector{Bool} && 0 < count(maskE) < length(rB.ν)
+        @test all(rB.ν[.!maskE] .>= 701.5)                    # only the named range dropped
+        @test count(exclude_channels(rB.ν)) == length(rB.ν)   # no ranges ⇒ keep all
+        # An all-true mask reproduces the unmasked retrieval to round-off.
+        rE0 = optimal_estimation(yB, specB, base, linelists;
+                                 xa=xaB, Sa=SaB, Se=SeB, fm_kwargs=fm,
+                                 channel_mask=trues(length(yB)))
+        @test isapprox(rE0.x, rB.x; atol=1e-10)
+        @test isapprox(rE0.chi2, rB.chi2; rtol=1e-10)
+        @test rE0.channel_mask == trues(length(yB))
+        # A real blacklist: spectra stay full-grid, diagnostics live on kept channels.
+        rE = optimal_estimation(yB, specB, base, linelists;
+                                xa=xaB, Sa=SaB, Se=SeB, fm_kwargs=fm, channel_mask=maskE)
+        @test rE.converged
+        @test length(rE.y_fit) == length(rE.ν) == length(yB)  # full-grid spectra
+        @test size(rE.K) == (length(yB), specB.n)             # full-grid Jacobian
+        @test rE.channel_mask == maskE
+        @test size(rE.G) == (specB.n, count(maskE))           # gain over kept channels
+        @test isapprox(rE.A, rE.G * rE.K[maskE, :]; rtol=1e-10)          # A == G·K[keep]
+        @test isapprox(rE.dof + rE.dfn, count(maskE); rtol=1e-10)        # DFS+DFN = #kept
+        @test 0.0 ≤ rE.dof ≤ rB.dof + 1e-8    # dropping channels can't add information
+        # Bad masks are rejected.
+        @test_throws ErrorException optimal_estimation(yB, specB, base, linelists;
+                xa=xaB, Sa=SaB, Se=SeB, fm_kwargs=fm, channel_mask=falses(length(yB)))
+        @test_throws ErrorException optimal_estimation(yB, specB, base, linelists;
+                xa=xaB, Sa=SaB, Se=SeB, fm_kwargs=fm, channel_mask=trues(length(yB)+1))
     end
 
     # ── Phase 4: FFT-based ILS reproduces the direct convolution ──────────────

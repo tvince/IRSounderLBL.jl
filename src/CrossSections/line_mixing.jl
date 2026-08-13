@@ -46,6 +46,29 @@ struct RelmatLine
     DipoT::Float64    # temperature-corrected dipole at 296 K
 end
 
+"""
+    BandCoupling
+
+T-independent sparse coupling structure of a `RelmatBand` for a given WTfit
+table: every ordered line pair (i, j) — original `band.lines` order, outer i,
+inner j with `Ji_j ≤ Ji_i` — that passes the Fortran pair skip, the
+isotopologue-symmetry restriction, and has a WTfit entry, together with its
+(W0R, B0R) coefficients. CSR-grouped by the outer line: the pairs of line `i`
+are `row_ptr[i]:(row_ptr[i+1]-1)`.
+
+Precomputing this removes the `Symbol`/`getfield`/`Dict` lookups from the
+O(n²) loop in `_build_W_matrix`; each temperature evaluation is then just
+`exp(W0R − B0R·log(T0/T))` over the pair list. Built once per band (eagerly by
+`load_hitran_relmat`, lazily by `_band_coupling` for directly-constructed
+bands) — valid for all T, but tied to the band's own WTfit table.
+"""
+struct BandCoupling
+    row_ptr::Vector{Int32}
+    col::Vector{Int32}
+    W0R::Vector{Float64}
+    B0R::Vector{Float64}
+end
+
 struct RelmatBand
     name::String
     li::Int8          # vibrational angular momentum, lower state
@@ -55,8 +78,12 @@ struct RelmatBand
     ν_max::Float64
     lines::Vector{RelmatLine}
     molecule::Int8    # HITRAN molecule id (2=CO2, 6=CH4) — selects mass/abundance/Q(T)
+    coupling::Base.RefValue{Union{Nothing, BandCoupling}}  # lazy T-independent pair table
 end
-# Back-compat: existing 7-arg call sites (all CO2) default molecule=2.
+# Back-compat: existing 7/8-arg call sites; the coupling table starts empty.
+RelmatBand(name, li, lf, isot, ν_min, ν_max, lines, molecule) =
+    RelmatBand(name, li, lf, isot, ν_min, ν_max, lines, molecule,
+               Ref{Union{Nothing, BandCoupling}}(nothing))
 RelmatBand(name, li, lf, isot, ν_min, ν_max, lines) =
     RelmatBand(name, li, lf, isot, ν_min, ν_max, lines, Int8(2))
 
@@ -165,36 +192,52 @@ function VPWLineMixing(data::HITRANRelmatData;
     return VPWLineMixing(data, wl, min_band_strength)
 end
 
+# Isotopologues present in a linelist, normalized to the relmat convention. HITRAN
+# codes the 10th isotopologue as the character '0' (parsed here into `iso_id == 0`),
+# whereas the relaxation matrix stores it as `10`; map 0→10 so the two agree.
+# Used to restrict the LM path to isotopes that actually have a Voigt baseline in the
+# linelist (Fix A): the relmat carries bands (e.g. CO2 iso-4) whose lines may be
+# absent from the loaded `.par` set, and applying their line-mixing *redistribution*
+# without an isotope *baseline* to redistribute is physically inconsistent.
+_linelist_isotopes(ll::HITRANLinelist) =
+    Set{Int}(Int(l.iso_id) == 0 ? 10 : Int(l.iso_id) for l in ll.lines)
+
 # Per-species cross-section dispatch used by `iasi_forward_model`.
 # `nothing` and any non-CO2 species fall through to the plain Voigt path.
 # `VPYLineMixing` + CO2 routes through the Voigt+dispersive wrapper.
 function _species_cross_section(::Nothing, sp::GasSpecies, ν_grid, ll, T, p_atm;
-                                 vmr_self::Float64, cutoff::Float64, backend)
+                                 vmr_self::Float64, cutoff::Float64, backend,
+                                 lm_cutoff::Float64 = cutoff)
     compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                   vmr_self=vmr_self, cutoff=cutoff, backend=backend)
 end
 
 function _species_cross_section(lm::AbstractLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
-                                 vmr_self::Float64, cutoff::Float64, backend)
+                                 vmr_self::Float64, cutoff::Float64, backend,
+                                 lm_cutoff::Float64 = cutoff)
     compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                   vmr_self=vmr_self, cutoff=cutoff, backend=backend)
 end
 
 function _species_cross_section(lm::VPYLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
-                                 vmr_self::Float64, cutoff::Float64, backend)
+                                 vmr_self::Float64, cutoff::Float64, backend,
+                                 lm_cutoff::Float64 = cutoff)
     sp == lm.data.species || return compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                                       vmr_self=vmr_self, cutoff=cutoff, backend=backend)
     compute_voigt_lm_cross_sections(ν_grid, ll, lm.data, T, p_atm; cutoff=cutoff,
-                                     min_band_strength=lm.min_band_strength)
+                                     lm_cutoff=lm_cutoff, min_band_strength=lm.min_band_strength,
+                                     isotopes=_linelist_isotopes(ll))
 end
 
 function _species_cross_section(lm::VPWLineMixing, sp::GasSpecies, ν_grid, ll, T, p_atm;
-                                 vmr_self::Float64, cutoff::Float64, backend)
+                                 vmr_self::Float64, cutoff::Float64, backend,
+                                 lm_cutoff::Float64 = cutoff)
     sp == lm.data.species || return compute_voigt_cross_sections(ν_grid, ll, T, p_atm;
                                                       vmr_self=vmr_self, cutoff=cutoff, backend=backend)
     compute_voigt_vpw_cross_sections(ν_grid, ll, lm.data, T, p_atm;
                                        whitelist=lm.whitelist, cutoff=cutoff,
-                                       min_band_strength=lm.min_band_strength)
+                                       lm_cutoff=lm_cutoff, min_band_strength=lm.min_band_strength,
+                                       isotopes=_linelist_isotopes(ll))
 end
 
 # ── LM-only perturbation accessor (for the Jacobian ∂σ/∂{T,p}, roadmap §6.4) ──
@@ -202,12 +245,60 @@ end
 # the Jacobian central-differences in (T, p). VP_Y → dispersive sum; VP_W → the
 # eigendecomposed band-perturbation sum. The Voigt baseline keeps its analytic grad;
 # only this (cheap relative to the baseline) perturbation is finite-differenced.
-_lm_perturbation(lm::VPYLineMixing, ν_grid, T, p_atm; cutoff) =
+
+"""
+    LMTCache
+
+Fixed-temperature cache of the O(n²) per-band quantities the LM perturbation
+rebuilds identically across same-T calls (lever 3): `Ys` = per-band Rosenkranz
+Y(T) for the dispersive path, `Wρ` = per-band-index (W, PopuT) for VP_W
+whitelisted bands. Neither carries pressure, so a cache built at the Jacobian's
+unperturbed T serves the centre call and both p-perturbation calls.
+"""
+struct LMTCache
+    T::Float64
+    Ys::Vector{Union{Nothing, Vector{Float64}}}
+    Wρ::Dict{Int, Tuple{Matrix{Float64}, Vector{Float64}}}
+end
+
+_lm_T_cache(lm::VPYLineMixing, T::Float64) =
+    LMTCache(T, _lm_dispersive_Ys(lm.data, T; min_band_strength=lm.min_band_strength),
+             Dict{Int, Tuple{Matrix{Float64}, Vector{Float64}}}())
+
+function _lm_T_cache(lm::VPWLineMixing, T::Float64)
+    Ys = _lm_dispersive_Ys(lm.data, T; min_band_strength=lm.min_band_strength,
+                           skip=lm.whitelist)
+    Wρ = Dict{Int, Tuple{Matrix{Float64}, Vector{Float64}}}()
+    for (bi, band) in enumerate(lm.data.bands)
+        band.name in lm.whitelist || continue
+        Int(band.li) > 8 && continue
+        lm.min_band_strength > 0.0 && _band_eff_strength(band) < lm.min_band_strength && continue
+        wtfit = get(lm.data.wtfit, (Int8(min(band.li, band.lf)), Int8(max(band.li, band.lf))), nothing)
+        wtfit === nothing && continue
+        Wρ[bi] = _build_W_matrix(band, wtfit, T)
+    end
+    return LMTCache(T, Ys, Wρ)
+end
+
+function _lm_perturbation(lm::VPYLineMixing, ν_grid, T, p_atm; cutoff,
+                          isotopes::Union{Nothing, Set{Int}} = nothing,
+                          cache::Union{Nothing, LMTCache} = nothing)
+    @assert cache === nothing || cache.T == T "LMTCache built at a different T"
     compute_lm_dispersive_correction(ν_grid, lm.data, T, p_atm;
-                                     cutoff=cutoff, min_band_strength=lm.min_band_strength)
-_lm_perturbation(lm::VPWLineMixing, ν_grid, T, p_atm; cutoff) =
+                                     cutoff=cutoff, min_band_strength=lm.min_band_strength,
+                                     isotopes=isotopes,
+                                     Ys = cache === nothing ? nothing : cache.Ys)
+end
+function _lm_perturbation(lm::VPWLineMixing, ν_grid, T, p_atm; cutoff,
+                          isotopes::Union{Nothing, Set{Int}} = nothing,
+                          cache::Union{Nothing, LMTCache} = nothing)
+    @assert cache === nothing || cache.T == T "LMTCache built at a different T"
     _vpw_perturbation(ν_grid, lm.data, T, p_atm; whitelist=lm.whitelist,
-                      cutoff=cutoff, min_band_strength=lm.min_band_strength)
+                      cutoff=cutoff, min_band_strength=lm.min_band_strength,
+                      isotopes=isotopes,
+                      Ys = cache === nothing ? nothing : cache.Ys,
+                      Wρs = cache === nothing ? nothing : cache.Wρ)
+end
 
 # ── File parsers ──────────────────────────────────────────────────────────────
 
@@ -418,12 +509,81 @@ function load_hitran_relmat(basedir::String, ν_min::Float64, ν_max::Float64;
         if !haskey(loaded_wtfit, key)
             loaded_wtfit[key] = _load_wtfit(basedir, Int(lli), Int(llf))
         end
+        # Eagerly build the T-independent coupling table (lever 1) so the hot
+        # path never has to (and threaded callers never race on the lazy Ref).
+        _band_coupling(bands[end], loaded_wtfit[key])
     end
 
     return HITRANRelmatData(bands, loaded_wtfit)
 end
 
 # ── Y coefficient computation (CalcW in Fortran) ─────────────────────────────
+
+"""
+    _build_coupling(band, wtfit) -> BandCoupling
+
+Derive the T-independent pair structure of `band` (see [`BandCoupling`](@ref)):
+replay the `_build_W_matrix` pair loop's skips — `Ji_j ≤ Ji_i` (Fortran),
+isotopologue symmetry, WTfit-entry presence — once, in original line order,
+and record each surviving ordered pair's (j, W0R, B0R) grouped by outer i.
+"""
+function _build_coupling(band::RelmatBand, wtfit::W0B0Table)::BandCoupling
+    n  = length(band.lines)
+    li = Int(band.li)
+    lf = Int(band.lf)
+    isot = Int(band.isot)
+    sym_restrict = isot > 2 && isot != 7 && isot != 10
+
+    Ji = Int[line.Ji for line in band.lines]
+    br = Int[line.branch for line in band.lines]
+
+    row_ptr = Vector{Int32}(undef, n + 1)
+    col = Int32[]; W0R = Float64[]; B0R = Float64[]
+    for i in 1:n
+        row_ptr[i] = Int32(length(col) + 1)
+        jji = Ji[i]; jjf = jji + br[i]
+        for j in 1:n
+            j == i && continue
+            jjip = Ji[j]; jjfp = jjip + br[j]
+
+            # Fortran skip: only process pairs where Ji_j ≤ Ji_i
+            jjip > jji && continue
+
+            # Asymmetric isotopologue symmetry restriction
+            sym_restrict && abs(jji - jjip) % 2 != 0 && continue
+
+            # WTfit convention: if li > lf swap J roles for table lookup
+            if li <= lf
+                ji_eff = jji; jf_eff = jjf; jip_eff = jjip; jfp_eff = jjfp
+            else
+                ji_eff = jjf; jf_eff = jji; jip_eff = jjfp; jfp_eff = jjip
+            end
+            key = (ji_eff, jip_eff)
+
+            type_i  = ji_eff  > jf_eff  ? :p : (ji_eff  == jf_eff  ? :q : :r)
+            type_ip = jip_eff > jfp_eff ? :p : (jip_eff == jfp_eff ? :q : :r)
+
+            v = get(getfield(wtfit, Symbol(type_i, type_ip)), key, nothing)
+            v === nothing && continue
+
+            push!(col, Int32(j)); push!(W0R, v[1]); push!(B0R, v[2])
+        end
+    end
+    row_ptr[n + 1] = Int32(length(col) + 1)
+    return BandCoupling(row_ptr, col, W0R, B0R)
+end
+
+# Memoized accessor. The cache is tied to the band's own WTfit table — every
+# call site pairs a band with `relmat.wtfit[(min(li,lf), max(li,lf))]`, so the
+# association is stable. `load_hitran_relmat` fills it eagerly; the lazy branch
+# covers directly-constructed bands (tests/scripts) and is idempotent.
+function _band_coupling(band::RelmatBand, wtfit::W0B0Table)::BandCoupling
+    c = band.coupling[]
+    c === nothing || return c
+    c = _build_coupling(band, wtfit)
+    band.coupling[] = c
+    return c
+end
 
 """
     _build_W_matrix(band, wtfit, T) -> (W, PopuT)
@@ -472,93 +632,71 @@ function _build_W_matrix(band::RelmatBand, wtfit::W0B0Table, T::Float64)
     ν_orig     = Float64[line.ν     for line in band.lines]
     S_eff      = [ν_orig[i] * PopuT[i] * DipoT_orig[i]^2 for i in 1:n]
 
-    ord     = sortperm(S_eff, rev=true)
-    inv_ord = invperm(ord)
+    # The intensity sort is T-dependent (via PopuT). It matters twice: the
+    # sum-rule renormalisation splits by sorted position, and equal-J pairs are
+    # written from both directions with last-writer-wins semantics — so the pair
+    # loop's OUTER order must replay the sorted order (inner order is free: each
+    # outer iteration writes disjoint slots).
+    ord = sortperm(S_eff, rev=true)
 
-    Dipo0_s = [band.lines[ord[i]].Dipo0 for i in 1:n]
-    Ji_s    = [Int(band.lines[ord[i]].Ji) for i in 1:n]
-    br_s    = [Int(band.lines[ord[i]].branch) for i in 1:n]
-    PopuT_s = PopuT[ord]
+    cp = _band_coupling(band, wtfit)   # T-independent sparse pair table (lever 1)
 
-    # Build W in sorted order (Ws), then permute back at the end.
-    Ws = zeros(Float64, n, n)
+    # Build W directly in original line order (replaces sorted-space build +
+    # permute-back; identical values, same overwrite semantics).
+    W = zeros(Float64, n, n)
     dlgT0T = log(_T0_LM / T)
     isot   = Int(band.isot)
 
-    for ir in 1:n
-        jji  = Ji_s[ir];  jjf  = Ji_s[ir]  + br_s[ir]
-        for irp in 1:n
-            irp == ir && continue
-            jjip = Ji_s[irp]; jjfp = Ji_s[irp] + br_s[irp]
-
-            # Fortran skip: only process pairs where Ji_irp ≤ Ji_ir
-            jjip > jji && continue
-
-            # Asymmetric isotopologue symmetry restriction
-            if isot > 2 && isot != 7 && isot != 10
-                abs(jji - jjip) % 2 != 0 && continue
-            end
-
-            # WTfit convention: if li > lf swap J roles for table lookup
-            if li <= lf
-                ji_eff = jji; jf_eff = jjf; jip_eff = jjip; jfp_eff = jjfp
-            else
-                ji_eff = jjf; jf_eff = jji; jip_eff = jjfp; jfp_eff = jjip
-            end
-            key = (ji_eff, jip_eff)
-
-            type_i  = ji_eff  > jf_eff  ? :p : (ji_eff  == jf_eff  ? :q : :r)
-            type_ip = jip_eff > jfp_eff ? :p : (jip_eff == jfp_eff ? :q : :r)
-            sub = Symbol(type_i, type_ip)
-
-            tbl = getfield(wtfit, sub)
-            haskey(tbl, key) || continue
-
-            W0R, B0R = tbl[key]
-            ycal = exp(W0R - B0R * dlgT0T)
-
-            Ws[irp, ir] = ycal
-            Ws[ir, irp] = ycal * PopuT_s[ir] / PopuT_s[irp]
+    @inbounds for ir in 1:n
+        i = ord[ir]
+        for t in cp.row_ptr[i]:(cp.row_ptr[i+1] - Int32(1))
+            j = Int(cp.col[t])
+            ycal = exp(cp.W0R[t] - cp.B0R[t] * dlgT0T)
+            W[j, i] = ycal
+            W[i, j] = ycal * PopuT[i] / PopuT[j]
         end
     end
 
     # Off-diagonals negative (energy flows out of each state)
-    for ir in 1:n, irp in 1:n
-        ir == irp && continue
-        Ws[ir, irp] = -abs(Ws[ir, irp])
+    @inbounds for j in 1:n, i in 1:n
+        i == j && continue
+        W[i, j] = -abs(W[i, j])
     end
 
     # Diagonal = air-broadened HWHM at T, p=1 atm
-    for ir in 1:n
-        line_ir = band.lines[ord[ir]]
-        Ws[ir, ir] = Float64(line_ir.gV_air) * ((_T0_LM / T)^Float64(line_ir.n_air))
+    for (i, line) in enumerate(band.lines)
+        W[i, i] = Float64(line.gV_air) * ((_T0_LM / T)^Float64(line.n_air))
     end
 
-    # Sum-rule renormalisation (Fortran convention: lower triangle, sorted order)
-    for ir in 1:n
+    # Sum-rule renormalisation (Fortran convention: lower triangle, sorted order;
+    # accessed through `ord` since W is stored in original order)
+    Ji = Int[line.Ji for line in band.lines]
+    Dipo0 = Float64[line.Dipo0 for line in band.lines]
+    sym_restrict = isot > 2 && isot != 7 && isot != 10
+    @inbounds for ir in 1:n
+        i = ord[ir]
+        Ji_i = Ji[i]
         sumLW = 0.0
         sumUp = 0.0
         for irp in 1:n
-            if isot > 2 && isot != 7 && isot != 10
-                abs(Ji_s[ir] - Ji_s[irp]) % 2 != 0 && continue
-            end
+            j = ord[irp]
+            sym_restrict && abs(Ji_i - Ji[j]) % 2 != 0 && continue
             if irp > ir
-                sumLW += abs(Dipo0_s[irp]) * Ws[irp, ir]
+                sumLW += abs(Dipo0[j]) * W[j, i]
             else
-                sumUp += abs(Dipo0_s[irp]) * Ws[irp, ir]
+                sumUp += abs(Dipo0[j]) * W[j, i]
             end
         end
 
         sumLW == 0.0 && continue
         ratio = -sumUp / sumLW
         for irp in (ir+1):n
-            Ws[irp, ir] = Ws[irp, ir] * ratio
-            Ws[ir, irp] = Ws[irp, ir] * PopuT_s[ir] / PopuT_s[irp]
+            j = ord[irp]
+            W[j, i] = W[j, i] * ratio
+            W[i, j] = W[j, i] * PopuT[i] / PopuT[j]
         end
     end
 
-    # Permute sorted → original line order: W_orig[i,j] = Ws[inv_ord[i], inv_ord[j]]
-    W = Ws[inv_ord, inv_ord]
     return W, PopuT
 end
 
@@ -676,14 +814,7 @@ function default_vpw_whitelist(data::HITRANRelmatData;
                                n_top::Int = 5,
                                isotopes::Union{Nothing, Vector{Int}} = nothing,
                                ν_window::Union{Nothing, Tuple{Real,Real}} = nothing)::Set{String}
-    band_S(band) = begin
-        S = 0.0
-        for line in band.lines
-            stim = 1.0 - exp(-_CT_LM * line.ν / _T0_LM)
-            S += line.DipoT^2 * line.PopuT0 * line.ν * stim
-        end
-        S
-    end
+    band_S = _band_eff_strength
 
     in_window(band) = isnothing(ν_window) ||
                       (band.ν_max >= ν_window[1] && band.ν_min <= ν_window[2])
@@ -760,11 +891,14 @@ cuts ~40% of poles with no visible BT impact.
 """
 function band_modes(band::RelmatBand, wtfit::W0B0Table, T::Float64,
                     p_atm::Float64;
-                    keep_threshold::Float64 = 0.0)::BandModes
+                    keep_threshold::Float64 = 0.0,
+                    Wρ::Union{Nothing, Tuple{Matrix{Float64}, Vector{Float64}}} = nothing)::BandModes
     n = length(band.lines)
     n == 0 && return BandModes(ComplexF64[], ComplexF64[], 0.0)
 
-    W, ρ = _build_W_matrix(band, wtfit, T)
+    # `Wρ` supplies a precomputed `_build_W_matrix(band, wtfit, T)` (lever-3
+    # cache: the Jacobian's centre and ∂p calls share T, and W carries no p).
+    W, ρ = Wρ === nothing ? _build_W_matrix(band, wtfit, T) : Wρ
 
     ν₀    = Float64[line.ν for line in band.lines]
     DipoT = Float64[line.DipoT for line in band.lines]
@@ -786,14 +920,14 @@ function band_modes(band::RelmatBand, wtfit::W0B0Table, T::Float64,
         end
     end
 
-    F    = eigen(M)
-    λ    = F.values
-    X    = F.vectors
-    Xinv = inv(X)
+    F = eigen(M)
+    λ = F.values
+    X = F.vectors
 
     # aₖ = Σᵢ D̂ᵢ Xᵢₖ;  bₖ = Σⱼ (X⁻¹)ₖⱼ ρⱼ D̂ⱼ;  Aₖ = aₖ · bₖ
+    # (X \ · via the LU factorization — cheaper and better conditioned than inv(X))
     a = transpose(X) * d_eff
-    b = Xinv * (ρ .* d_eff)
+    b = X \ (ρ .* d_eff)
     A = a .* b
 
     iso      = Int(band.isot == 10 ? 10 : band.isot)
@@ -932,8 +1066,9 @@ function compute_vpw_band_perturbation(ν_grid::WavenumberGrid, band::RelmatBand
                                         wtfit::W0B0Table, T::Float64, p_atm::Float64;
                                         cutoff::Float64 = 25.0,
                                         keep_threshold::Float64 = 1e-4,
-                                        x_far::Float64 = _X_FAR)::Vector{Float64}
-    modes_full = band_modes(band, wtfit, T, p_atm; keep_threshold=keep_threshold)
+                                        x_far::Float64 = _X_FAR,
+                                        Wρ::Union{Nothing, Tuple{Matrix{Float64}, Vector{Float64}}} = nothing)::Vector{Float64}
+    modes_full = band_modes(band, wtfit, T, p_atm; keep_threshold=keep_threshold, Wρ=Wρ)
     σ_full     = compute_vpw_band_xsec(ν_grid, modes_full; cutoff=cutoff, x_far=x_far)
     modes_base = _diagonal_band_modes(band, T, p_atm, modes_full.f)
     σ_base     = compute_vpw_band_xsec(ν_grid, modes_base; cutoff=cutoff, x_far=x_far)
@@ -961,13 +1096,15 @@ function compute_voigt_vpw_cross_sections(ν_grid::WavenumberGrid,
                                             T::Float64, p_atm::Float64;
                                             whitelist::Set{String},
                                             cutoff::Float64 = 25.0,
+                                            lm_cutoff::Float64 = cutoff,
                                             keep_threshold::Float64 = 1e-4,
                                             min_band_strength::Float64 = 0.0,
+                                            isotopes::Union{Nothing, Set{Int}} = nothing,
                                             x_far::Float64 = _X_FAR)::Vector{Float64}
     σ_voigt = compute_voigt_cross_sections(ν_grid, ll_co2, T, p_atm; cutoff=cutoff)
-    Δσ = _vpw_perturbation(ν_grid, relmat, T, p_atm; whitelist=whitelist, cutoff=cutoff,
+    Δσ = _vpw_perturbation(ν_grid, relmat, T, p_atm; whitelist=whitelist, cutoff=lm_cutoff,
                            keep_threshold=keep_threshold, min_band_strength=min_band_strength,
-                           x_far=x_far)
+                           isotopes=isotopes, x_far=x_far)
     return max.(σ_voigt .+ Δσ, 0.0)
 end
 
@@ -986,30 +1123,156 @@ function _vpw_perturbation(ν_grid::WavenumberGrid, relmat::HITRANRelmatData,
                            cutoff::Float64 = 25.0,
                            keep_threshold::Float64 = 1e-4,
                            min_band_strength::Float64 = 0.0,
-                           x_far::Float64 = _X_FAR)::Vector{Float64}
-    Δσ = zeros(Float64, ν_grid.n)
-    for band in relmat.bands
+                           x_far::Float64 = _X_FAR,
+                           isotopes::Union{Nothing, Set{Int}} = nothing,
+                           Ys = nothing,
+                           Wρs::Union{Nothing, Dict{Int, Tuple{Matrix{Float64}, Vector{Float64}}}} = nothing)::Vector{Float64}
+    # Non-whitelisted bands: one flat dispersive launch over all of them.
+    Δσ = compute_lm_dispersive_correction(ν_grid, relmat, T, p_atm;
+                                          cutoff=cutoff, x_far=x_far,
+                                          min_band_strength=min_band_strength,
+                                          skip=whitelist, isotopes=isotopes, Ys=Ys)
+    # Whitelisted bands: eigendecomposed per-band perturbation (a handful).
+    for (bi, band) in enumerate(relmat.bands)
+        band.name in whitelist || continue
         Int(band.li) > 8 && continue
+        # Fix A: skip bands whose isotopologue has no Voigt baseline in the linelist.
+        isotopes !== nothing && Int(band.isot) ∉ isotopes && continue
         # #4 cutoff: skip bands whose abundance-weighted intensity is below threshold.
         min_band_strength > 0.0 && _band_eff_strength(band) < min_band_strength && continue
         lli = Int8(min(band.li, band.lf))
         llf = Int8(max(band.li, band.lf))
         wtfit = get(relmat.wtfit, (lli, llf), nothing)
         wtfit === nothing && continue
-
-        if band.name in whitelist
-            Δσ .+= compute_vpw_band_perturbation(ν_grid, band, wtfit, T, p_atm;
-                                                   cutoff=cutoff,
-                                                   keep_threshold=keep_threshold,
-                                                   x_far=x_far)
-        else
-            Δσ .+= _lm_band_dispersive(ν_grid, band, wtfit, T, p_atm; cutoff=cutoff, x_far=x_far)
-        end
+        Wρ = Wρs === nothing ? nothing : get(Wρs, bi, nothing)
+        Δσ .+= compute_vpw_band_perturbation(ν_grid, band, wtfit, T, p_atm;
+                                               cutoff=cutoff,
+                                               keep_threshold=keep_threshold,
+                                               x_far=x_far, Wρ=Wρ)
     end
     return Δσ
 end
 
 # ── Cross-section computation ─────────────────────────────────────────────────
+
+# Single-launch dispersive evaluator (lever 5). All active lines — every band,
+# compact (no placeholder slots) — are concatenated, sorted by (shifted) centre,
+# and evaluated in ONE windowed KernelAbstractions kernel, mirroring
+# `voigt_cross_section_kernel!`: one work-item per grid point, binary-search
+# windowing on the sorted centres, in-place accumulation. This replaces the old
+# per-band path (a full-grid `zeros(n_ν)` allocation + `Threads.@threads` launch
+# per band — ~170 MB of transient allocation and 339 launches per call at
+# production size). CPU-only: the body needs the complex `erfcx`.
+@kernel function lm_dispersive_kernel!(Δσ, ν_grid, lν0, lf, ly, lYSn, cutoff, x_far)
+    i   = @index(Global, Linear)
+    ν   = ν_grid[i]
+    n_L = length(lν0)
+
+    # Lines sorted by ν0; window to [ν-cutoff, ν+cutoff] (⇒ |Δν| ≤ cutoff).
+    j_lo = _lower_bound(lν0, ν - cutoff, n_L)
+    j_hi = _upper_bound(lν0, ν + cutoff, n_L)
+
+    acc = 0.0
+    @inbounds for j in j_lo:j_hi
+        x  = (ν - lν0[j]) * lf[j]
+        yk = ly[j]
+        # Far-wing analytic limit of Im[w]: x/(√π(x²+y²)) beyond |x|>x_far
+        # (Gaussian core decayed). Same shortcut as the main Voigt path; skips erfcx.
+        imw = abs(x) > x_far ? x * _INV_SQRT_PI / (x*x + yk*yk) :
+                               imag(erfcx(complex(yk, -x)))
+        acc += lYSn[j] * imw
+    end
+    Δσ[i] = acc
+end
+
+# Append the active dispersive lines of one band (Y ≠ 0 and S_T > 0) to the flat
+# per-line arrays: shifted centre ν0, Doppler factor f, y = γ_L·f, and the
+# per-line weight YSnorm = Y·p·S(T)·f/√π. Same per-line math as the old
+# `_lm_band_dispersive` prologue, but compact — inactive lines are simply not
+# appended (no uninitialized placeholder slots).
+function _append_dispersive_lines!(ν0s::Vector{Float64}, fs::Vector{Float64},
+                                   ys::Vector{Float64}, YSns::Vector{Float64},
+                                   band::RelmatBand, Y_band::Vector{Float64},
+                                   T::Float64, p_atm::Float64)
+    M_amu        = _lm_mass_amu(band.molecule, Int(band.isot))
+    iso          = Int(band.isot == 10 ? 10 : band.isot)
+    Q_ratio_band = partition_function(Int(band.molecule), iso, T_REF) / partition_function(Int(band.molecule), iso, T)
+
+    for (k, rl) in enumerate(band.lines)
+        Y_band[k] == 0.0 && continue     # zero weight either way
+        ν0  = Float64(rl.ν) + Float64(rl.shift) * p_atm
+        γ_D = _CTGAMD * rl.ν * sqrt(T / M_amu)
+        γ_L = Float64(rl.gV_air) * (_T0_LM / T)^Float64(rl.n_air) * p_atm
+        f   = _SQRT_LN2 / max(γ_D, 1e-10)
+
+        stim_T0 = 1.0 - exp(-_CT_LM * rl.ν / _T0_LM)
+        stim_T  = 1.0 - exp(-_CT_LM * rl.ν / T)
+        S0  = rl.DipoT^2 * rl.PopuT0 * rl.ν * stim_T0
+        S_T = S0 * Q_ratio_band *
+              exp(-_CT_LM * rl.E_lower * (1.0/T - 1.0/_T0_LM)) *
+              stim_T / stim_T0
+        S_T <= 0.0 && continue
+
+        push!(ν0s, ν0); push!(fs, f); push!(ys, γ_L * f)
+        push!(YSns, Y_band[k] * p_atm * S_T * f * _INV_SQRT_PI)
+    end
+    return nothing
+end
+
+# Sort the flat line arrays by centre and run the single kernel launch.
+function _lm_dispersive_eval(ν_grid::WavenumberGrid,
+                             ν0s::Vector{Float64}, fs::Vector{Float64},
+                             ys::Vector{Float64}, YSns::Vector{Float64};
+                             cutoff::Float64, x_far::Float64)::Vector{Float64}
+    Δσ = zeros(Float64, ν_grid.n)
+    isempty(ν0s) && return Δσ
+    ord = sortperm(ν0s)
+    backend = CPU()
+    kernel! = lm_dispersive_kernel!(backend, 256)
+    kernel!(Δσ, ν_grid.ν, ν0s[ord], fs[ord], ys[ord], YSns[ord], cutoff, x_far;
+            ndrange = ν_grid.n)
+    KernelAbstractions.synchronize(backend)
+    return Δσ
+end
+
+# Per-band VP_Y dispersive perturbation (single-band flat evaluation). Kept for
+# tests and fine-grained use; the production paths batch all bands into one
+# launch via `compute_lm_dispersive_correction`. `Y` overrides the Y(T) build
+# (lever 3 cache).
+function _lm_band_dispersive(ν_grid::WavenumberGrid, band::RelmatBand,
+                              wtfit::W0B0Table, T::Float64, p_atm::Float64;
+                              cutoff::Float64 = 25.0,
+                              x_far::Float64 = _X_FAR,
+                              Y::Union{Nothing, Vector{Float64}} = nothing)::Vector{Float64}
+    Y_band = Y === nothing ? _calc_W_and_Y(band, wtfit, T) : Y
+    ν0s = Float64[]; fs = Float64[]; ys = Float64[]; YSns = Float64[]
+    _append_dispersive_lines!(ν0s, fs, ys, YSns, band, Y_band, T, p_atm)
+    return _lm_dispersive_eval(ν_grid, ν0s, fs, ys, YSns; cutoff=cutoff, x_far=x_far)
+end
+
+"""
+    _lm_dispersive_Ys(relmat, T; min_band_strength=0.0, skip=nothing)
+        -> Vector{Union{Nothing, Vector{Float64}}}
+
+Y(T) for every band that passes the dispersive-path filters (aligned with
+`relmat.bands`; `nothing` for filtered/skipped bands). The lever-3 cache: the
+Jacobian's centre and both ∂p perturbation calls share one temperature, so the
+O(n²) Y build runs once instead of three times per layer.
+"""
+function _lm_dispersive_Ys(relmat::HITRANRelmatData, T::Float64;
+                           min_band_strength::Float64 = 0.0,
+                           skip::Union{Nothing, Set{String}} = nothing)
+    Ys = Vector{Union{Nothing, Vector{Float64}}}(nothing, length(relmat.bands))
+    for (bi, band) in enumerate(relmat.bands)
+        Int(band.li) > 8 && continue
+        min_band_strength > 0.0 && _band_eff_strength(band) < min_band_strength && continue
+        wtfit = get(relmat.wtfit, (Int8(min(band.li, band.lf)), Int8(max(band.li, band.lf))), nothing)
+        wtfit === nothing && continue
+        skip !== nothing && band.name in skip && continue
+        Ys[bi] = _calc_W_and_Y(band, wtfit, T)
+    end
+    return Ys
+end
 
 """
     compute_lm_dispersive_correction(ν_grid, relmat, T, p_atm;
@@ -1032,98 +1295,41 @@ Add to a Voigt baseline (`compute_voigt_cross_sections` with the full HITRAN
 CO2 linelist) to obtain the total cross section.
 
 Line parameters (ν₀, γ_L, γ_D, S(T)) come from the S-files, consistent with
-the CalcW Y computation.
+the CalcW Y computation.  All bands' active lines are evaluated in a single
+windowed kernel launch (`lm_dispersive_kernel!`).  Internal kwargs: `skip`
+excludes named bands (the VP_W whitelist), `Ys` supplies precomputed Y(T)
+per band (`_lm_dispersive_Ys`, lever-3 cache).
 """
-# Per-band VP_Y dispersive perturbation; shared by `compute_lm_dispersive_correction`
-# (loops all bands) and `compute_voigt_vpw_cross_sections` (per-band hybrid dispatch).
-function _lm_band_dispersive(ν_grid::WavenumberGrid, band::RelmatBand,
-                              wtfit::W0B0Table, T::Float64, p_atm::Float64;
-                              cutoff::Float64 = 25.0,
-                              x_far::Float64 = _X_FAR)::Vector{Float64}
-    n_ν    = ν_grid.n
-    σ_band = zeros(Float64, n_ν)
-
-    Y_band  = _calc_W_and_Y(band, wtfit, T)
-    n_lines = length(band.lines)
-
-    M_amu        = _lm_mass_amu(band.molecule, Int(band.isot))
-    iso          = Int(band.isot == 10 ? 10 : band.isot)
-    Q_ratio_band = partition_function(Int(band.molecule), iso, T_REF) / partition_function(Int(band.molecule), iso, T)
-
-    ν0_b   = Vector{Float64}(undef, n_lines)
-    f_b    = Vector{Float64}(undef, n_lines)
-    y_b    = Vector{Float64}(undef, n_lines)
-    YSnorm = zeros(Float64, n_lines)
-
-    ν0_min = Inf; ν0_max = -Inf      # span of active lines, for the ν-window
-    for (k, rl) in enumerate(band.lines)
-        ν0  = Float64(rl.ν) + Float64(rl.shift) * p_atm
-        γ_D = _CTGAMD * rl.ν * sqrt(T / M_amu)
-        γ_L = Float64(rl.gV_air) * (_T0_LM / T)^Float64(rl.n_air) * p_atm
-        f   = _SQRT_LN2 / max(γ_D, 1e-10)
-        y   = γ_L * f
-
-        stim_T0 = 1.0 - exp(-_CT_LM * rl.ν / _T0_LM)
-        stim_T  = 1.0 - exp(-_CT_LM * rl.ν / T)
-        S0  = rl.DipoT^2 * rl.PopuT0 * rl.ν * stim_T0
-        S_T = S0 * Q_ratio_band *
-              exp(-_CT_LM * rl.E_lower * (1.0/T - 1.0/_T0_LM)) *
-              stim_T / stim_T0
-        S_T <= 0.0 && continue
-
-        ν0_b[k]  = ν0
-        f_b[k]   = f
-        y_b[k]   = y
-        YSnorm[k] = Y_band[k] * p_atm * S_T * f * _INV_SQRT_PI
-        ν0_min = min(ν0_min, ν0); ν0_max = max(ν0_max, ν0)
-    end
-
-    # Band ν-window: only points within ±cutoff of an active line contribute, so
-    # restrict the (threaded) ν loop to that span. The per-line cutoff check below
-    # still guarantees correctness for any window margin.
-    isfinite(ν0_min) || return σ_band          # no active lines
-    i_lo = searchsortedfirst(ν_grid.ν, ν0_min - cutoff)
-    i_hi = searchsortedlast(ν_grid.ν,  ν0_max + cutoff)
-    i_lo > i_hi && return σ_band
-
-    Threads.@threads for i in i_lo:i_hi
-        νi  = ν_grid.ν[i]
-        acc = 0.0
-        for k in 1:n_lines
-            YSnorm[k] == 0.0 && continue
-            abs(νi - ν0_b[k]) > cutoff && continue
-            x  = (νi - ν0_b[k]) * f_b[k]
-            yk = y_b[k]
-            # Far-wing analytic limit of Im[w]: x/(√π(x²+y²)) beyond |x|>x_far
-            # (Gaussian core decayed). Same shortcut as the main Voigt path; skips erfcx.
-            imw = abs(x) > x_far ? x * _INV_SQRT_PI / (x*x + yk*yk) :
-                                   imag(erfcx(complex(yk, -x)))
-            acc += YSnorm[k] * imw
-        end
-        σ_band[i] = acc
-    end
-    return σ_band
-end
-
 function compute_lm_dispersive_correction(ν_grid::WavenumberGrid,
                                            relmat::HITRANRelmatData,
                                            T::Float64,
                                            p_atm::Float64;
                                            cutoff::Float64 = 25.0,
                                            min_band_strength::Float64 = 0.0,
-                                           x_far::Float64 = _X_FAR)::Vector{Float64}
-    σ_disp = zeros(Float64, ν_grid.n)
-    for band in relmat.bands
+                                           x_far::Float64 = _X_FAR,
+                                           skip::Union{Nothing, Set{String}} = nothing,
+                                           isotopes::Union{Nothing, Set{Int}} = nothing,
+                                           Ys = nothing)::Vector{Float64}
+    ν0s = Float64[]; fs = Float64[]; ys = Float64[]; YSns = Float64[]
+    for (bi, band) in enumerate(relmat.bands)
         Int(band.li) > 8 && continue
+        # Fix A: skip bands whose isotopologue has no Voigt baseline in the linelist.
+        isotopes !== nothing && Int(band.isot) ∉ isotopes && continue
         # #4 cutoff: skip bands whose abundance-weighted intensity is below threshold.
         min_band_strength > 0.0 && _band_eff_strength(band) < min_band_strength && continue
         lli = Int8(min(band.li, band.lf))
         llf = Int8(max(band.li, band.lf))
         wtfit = get(relmat.wtfit, (lli, llf), nothing)
         wtfit === nothing && continue
-        σ_disp .+= _lm_band_dispersive(ν_grid, band, wtfit, T, p_atm; cutoff=cutoff, x_far=x_far)
+        skip !== nothing && band.name in skip && continue
+        Y_band = if Ys === nothing || Ys[bi] === nothing
+            _calc_W_and_Y(band, wtfit, T)
+        else
+            Ys[bi]::Vector{Float64}
+        end
+        _append_dispersive_lines!(ν0s, fs, ys, YSns, band, Y_band, T, p_atm)
     end
-    return σ_disp
+    return _lm_dispersive_eval(ν_grid, ν0s, fs, ys, YSns; cutoff=cutoff, x_far=x_far)
 end
 
 """
@@ -1148,13 +1354,16 @@ function compute_voigt_lm_cross_sections(ν_grid::WavenumberGrid,
                                           T::Float64,
                                           p_atm::Float64;
                                           cutoff::Float64 = 25.0,
+                                          lm_cutoff::Float64 = cutoff,
                                           method::VoigtMethod = FullFaddeeva,
                                           min_band_strength::Float64 = 0.0,
+                                          isotopes::Union{Nothing, Set{Int}} = nothing,
                                           x_far::Float64 = _X_FAR)::Vector{Float64}
     σ_voigt = compute_voigt_cross_sections(ν_grid, ll_co2, T, p_atm;
                                             cutoff=cutoff, method=method, x_far=x_far)
     σ_disp  = compute_lm_dispersive_correction(ν_grid, relmat, T, p_atm;
-                                                cutoff=cutoff, x_far=x_far,
-                                                min_band_strength=min_band_strength)
+                                                cutoff=lm_cutoff, x_far=x_far,
+                                                min_band_strength=min_band_strength,
+                                                isotopes=isotopes)
     return max.(σ_voigt .+ σ_disp, 0.0)
 end

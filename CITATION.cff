@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+title: "IRSounderLBL.jl: Line-by-line thermal infrared radiance simulation for nadir-viewing hyperspectral sounders"
+abstract: >-
+  A Julia package for line-by-line simulation and optimal-estimation retrieval
+  of thermal infrared spectra from nadir-viewing hyperspectral Fourier transform
+  sounders (IASI, CrIS, IASI-NG, MTG-IRS), validated against ARTS and LBLRTM.
+type: software
+authors:
+  - given-names: Tony
+    family-names: Vincent
+    alias: tvince
+version: 0.1.0
+date-released: 2026-07-26
+license: MIT
+repository-code: "https://github.com/tvince/IRSounderLBL.jl"
+keywords:
+  - radiative-transfer
+  - remote-sensing
+  - infrared-sounder
+  - HITRAN
+  - optimal-estimation
+  - atmospheric-science
+  - julia
+references:
+  - type: article
+    title: "The HITRAN2020 molecular spectroscopic database"
+    authors:
+      - family-names: Gordon
+        given-names: I. E.
+    journal: "Journal of Quantitative Spectroscopy and Radiative Transfer"
+    volume: 277
+    year: 2022
+    doi: 10.1016/j.jqsrt.2021.107949

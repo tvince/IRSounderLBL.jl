@@ -58,6 +58,13 @@ const HITRAN_GLOBAL_ISO_ID = Dict{Tuple{Int,Int}, Int}(
     (11,1)=>52,(11,2)=>53,
 )
 
+# Byte count from a libcurl short-transfer message ("end of response with N
+# bytes missing"), or `nothing` if the message has no such count.
+function _missing_bytes(message::AbstractString)
+    m = match(r"(\d+) bytes missing", message)
+    return isnothing(m) ? nothing : parse(Int, m.captures[1])
+end
+
 """
     fetch_hitran_api(mol_id, iso_id, ν_min, ν_max;
                      outfile=nothing, api_key=nothing) -> HITRANLinelist
@@ -86,8 +93,10 @@ function fetch_hitran_api(mol_id::Int, iso_id::Int,
     isnothing(global_id) && error("Unknown (mol_id=$mol_id, iso_id=$iso_id). Check HITRAN_GLOBAL_ISO_ID table.")
 
     base_url = "https://hitran.org/lbl/api"
-    params   = "?iso_ids_list=$global_id&numin=$ν_min&numax=$ν_max&api_key=$key"
-    url      = base_url * params
+    query    = "?iso_ids_list=$global_id&numin=$ν_min&numax=$ν_max"
+    url      = base_url * query * "&api_key=$key"
+    # Same URL with the key elided, for anything that gets logged or thrown.
+    safe_url = base_url * query * "&api_key=<redacted>"
 
     mktempdir() do tmpdir
         tmpfile = joinpath(tmpdir, "hitran.par")
@@ -101,11 +110,27 @@ function fetch_hitran_api(mol_id::Int, iso_id::Int,
         # resp is either a Response or a RequestError (on truncation)
         http_status = resp isa Downloads.Response ? resp.status : resp.response.status
         if http_status ∉ (200, 206)
-            error("HITRAN API returned HTTP $http_status\nURL: $url")
+            error("HITRAN API returned HTTP $http_status\nURL: $safe_url")
         end
-        # Truncated transfers (e.g. missing last few bytes) are acceptable
+        # The LBL API declares a Content-Length that counts each 160-character
+        # record as ending in CRLF, but serves bare LF, so libcurl reports every
+        # complete transfer as short by exactly one byte per record. Recognise
+        # that signature and stay quiet; anything else is a real truncation.
         if resp isa Downloads.RequestError
-            @warn "Download truncated ($(resp.message)); partial data will be used"
+            nrec, ragged = open(tmpfile, "r") do io
+                n = 0; bad = false
+                for rec in eachline(io)
+                    n += 1
+                    isempty(rec) || length(rec) == 160 || (bad = true)
+                end
+                (n, bad)
+            end
+            shortfall = _missing_bytes(resp.message)
+            if !ragged && !isnothing(shortfall) && shortfall == nrec
+                @debug "Content-Length counted CRLF terminators; all $nrec records complete"
+            else
+                @warn "Download truncated ($(resp.message)); partial data will be used" records = nrec ragged_records = ragged
+            end
         end
 
         if !isnothing(outfile)
