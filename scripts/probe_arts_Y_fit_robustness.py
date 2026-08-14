@@ -13,7 +13,7 @@ import os, copy, time
 import numpy as np
 import pyarts, pyarts.workspace
 
-DATA = "/Users/tonyvincent/RadiativeTransfer/data"
+DATA = os.environ.get("IRSOUNDER_DATA", "data")   # run from the repo root, or override
 LM   = os.path.join(DATA, "Line-mixing_HITRAN2020", "data_new")
 C_CM = 29979245800.0
 def wn2hz(x): return np.asarray(x) * C_CM

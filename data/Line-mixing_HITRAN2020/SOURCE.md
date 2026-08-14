@@ -27,7 +27,7 @@ recommended for use with HITRAN2020 line data, so make sure you take the 2020 on
 | `data_new/` | What you pass as `basedir` to `load_hitran_relmat`. ~6,600 files: `BandInfo.dat`, `Excluded_bands.dat`, and per-band `S<band>.dat` relaxation-matrix files. |
 | `data_new/BandInfo.dat` | Band index — parsed to select bands overlapping `[ν_min, ν_max]` above `stot_min`. |
 | `ABSCO_HIT2020.dat` | HITRAN2020 absorption coefficients supplied with the package. |
-| `LM_calc_CO2.for`, `LM_calc_15um.for`, `parameters.inc` | Authors' Fortran reference implementation. Not read by Julia, but this is what the Julia `VP_Y` values were validated against (agreement ≈1.5%, which established that the ARTS Y divergence near 665 cm⁻¹ was a bug in ARTS, not here — see `ARTS_CIA_BUG_REPORT.md` lineage and atmtools/arts#1130). |
+| `LM_calc_CO2.for`, `LM_calc_15um.for`, `parameters.inc` | Authors' Fortran reference implementation. Not read by Julia, but this is what the Julia `VP_Y` values were validated against (agreement ≈1.5%, which established that the ARTS Y divergence near 665 cm⁻¹ was a bug in ARTS, not here — see `docs/ARTS_CIA_BUG_REPORT.md` lineage and atmtools/arts#1130). |
 | `Instructions_LM_CO2.pdf` | Authors' usage notes, supplied with the package. |
 
 Note the S-file names carry **trailing spaces** (`S00001100001  .dat`); the loader

@@ -36,11 +36,13 @@ Research code, validated against ARTS 2.6 on the IASI spectral range
 
 ## Install
 
-The package is not registered. From the Julia REPL:
+The package is not yet registered. From the Julia REPL:
 
 ```julia
-] dev /path/to/IRSounderLBL
+] add https://github.com/tvince/IRSounderLBL.jl
 ```
+
+or, for local development, `] dev /path/to/IRSounderLBL`.
 
 Requires Julia ≥ 1.10. A `HITRAN_API_KEY` environment variable is needed
 if you want to fetch lines via `fetch_hitran_api`; otherwise local `.par`

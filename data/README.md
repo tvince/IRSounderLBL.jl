@@ -80,7 +80,7 @@ build in `~/LBLRTM_build` (see project notes).
 | `lblrtm/julia_lblrtm_compare.png` | `scripts/compare_julia_lblrtm.py` |
 
 ### ARTS issue #1130 reproducer artifacts (15 µm CO₂ Y bug)
-Cited in `ARTS_BUG_REPORT.md` / GitHub issue #1130.
+Cited in `docs/ARTS_BUG_REPORT.md` / GitHub issue #1130.
 | File | Script |
 | --- | --- |
 | `julia_Y_near_665.csv` | `scripts/dump_julia_Y_near_665.jl` |
