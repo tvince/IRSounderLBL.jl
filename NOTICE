@@ -31,7 +31,24 @@ which the end user is responsible for meeting when running the package.
 
 2. TIPS-2024 total internal partition sums
    Provider : R. R. Gamache et al. (HITRAN partition functions)
-   Cite     : Gamache et al., JQSRT 345, 109509 (2025).
+   Files    : src/HITRAN/tips2024_data.jl — Q(T) tables BUNDLED with this
+              package, DERIVED from the TIPS-2024 v1.2 distribution by
+              scripts/extract_tips.py (46 isotopologues of 9 molecules, of the
+              196/62 upstream; restricted to T = 70-400 K in 1 K steps and
+              reformatted as a Julia Dict).
+   Terms    : Creative Commons Attribution 4.0 International (CC-BY-4.0).
+              https://creativecommons.org/licenses/by/4.0/
+              Redistribution IS permitted, including in modified form, provided
+              credit is given, the license is linked, and modifications are
+              indicated. This package redistributes a modified subset under
+              those terms; the modification is stated in the file header and
+              above. Unlike items 1 and 5, this data does NOT fall under
+              HITRAN's no-redistribution policy.
+   Source   : Gamache R. R. et al., "Partition sums for molecules and their
+              isotopologues for HITRAN2024, version 1.2", Zenodo (2025-09-24),
+              doi:10.5281/zenodo.17191976.
+   Cite     : Gamache et al., JQSRT 345, 109568 (2025);
+              erratum JQSRT 346, 109618 (2025).
 
 3. MT-CKD continuum (H2O and CO2 coefficient tables)
    Provider : Atmospheric and Environmental Research, Inc. (AER); developed as

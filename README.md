@@ -200,18 +200,27 @@ spectroscopic and atmospheric reference data the package reads at runtime, each
 of which carries its provider's own usage and citation terms. See the
 [`NOTICE`](NOTICE) file for the full breakdown; the short version:
 
-| Data | Source | Redistribution | You must cite |
-|---|---|---|---|
-| Line lists (`*.par`), CIA (`*.cia`) | [HITRAN](https://hitran.org) | **No** — fetch it yourself | HITRAN2020; Karman et al. 2019 |
-| TIPS-2024 partition sums | Gamache et al. | with attribution | Gamache et al. 2025 |
-| MT-CKD continuum tables | AER ([MT_CKD](https://github.com/AER-RC/MT_CKD)) | with attribution | Mlawer et al. 2012 |
-| AFGL standard atmospheres | AFGL | freely | Anderson et al. 1986 |
-| CO₂ line-mixing data | Lamouroux/Hartmann | with attribution | Lamouroux et al. 2015 |
+| Data | Source | Bundled? | Redistribution | You must cite |
+|---|---|---|---|---|
+| Line lists (`*.par`), CIA (`*.cia`) | [HITRAN](https://hitran.org) | no | **No** — fetch it yourself | HITRAN2020; Karman et al. 2019 |
+| TIPS-2024 partition sums | Gamache et al. ([Zenodo](https://doi.org/10.5281/zenodo.17191976)) | yes | Yes — [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/), modified subset | Gamache et al. 2025 |
+| MT-CKD continuum tables | AER ([MT_CKD](https://github.com/AER-RC/MT_CKD)) | yes | Yes, with attribution — **research use only** | Mlawer et al. 2012 |
+| AFGL standard atmospheres | AFGL | yes | freely | Anderson et al. 1986 |
+| CO₂ line-mixing data | Lamouroux/Hartmann (via HITRAN) | no | **No** — fetch it yourself | Lamouroux et al. 2015 |
 
 **HITRAN data is not redistributable** and you are responsible for obtaining it
 from hitran.org under HITRAN's data-use policy and for meeting its citation
-requirement. See [`data/cia/SOURCE.md`](data/cia/SOURCE.md) for the exact files
-and download steps.
+requirement. This covers both the line lists/CIA and the CO₂ line-mixing
+relaxation-matrix package — neither is bundled here. See
+[`data/cia/SOURCE.md`](data/cia/SOURCE.md) for the exact files and download
+steps.
+
+**The distribution as a whole is not OSI open source.** The MIT license covers
+the code, but the bundled AER MT-CKD coefficient tables carry a research-use
+license that forbids incorporation into proprietary or commercial software
+without AER's written consent. If that matters to you, drop
+`data/mt_ckd_*/` and supply your own continuum coefficients. The other bundled
+data (TIPS under CC-BY-4.0, AFGL) carries no such restriction.
 
 ## Citing this software
 

@@ -23,7 +23,7 @@ const ν_HI  = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 800.0
 const GRANULE = length(ARGS) >= 3 ? ARGS[3] :
     "data/iasi_l1c/IASI_xxx_1C_M03_20260609152958Z_20260609153253Z_N_O_20260609165144Z__20260609165227"
 const NCM_PATH = get(ENV, "IASI_NCM",
-    "/private/tmp/claude-501/-Users-tonyvincent-IRSounderLBL/a4127f1c-777f-41c4-ac07-89fddab8e5c7/scratchpad/ncm/IASI_NCM_1C_M03_PN01_20250827145836Z.nc")
+    "data/iasi_ncm/IASI_NCM_1C_M03_PN01_20250827145836Z.nc")
 const CO2_PPM = 432.0
 const ε_SEA   = 0.98
 const INTERNAL_DNU = 0.0005
