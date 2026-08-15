@@ -1,3 +1,18 @@
+"""
+IRSounderLBL — line-by-line thermal-infrared radiance simulation and
+optimal-estimation retrieval for nadir-viewing hyperspectral FTS sounders
+(IASI, CrIS, IASI-NG, MTG-IRS).
+
+Pipeline: atmospheric profile → Curtis–Godson layer quantities → HITRAN
+line-by-line cross-sections (+ MT-CKD continuum, CIA, CO₂ line mixing) →
+optical depth → plane-parallel Schwarzschild RTE → instrument ILS/apodization
+→ analytic Jacobians and optimal estimation.
+
+The architecture and much of the methodology follow Anu Dudhia's Reference
+Forward Model (RFM; Dudhia 2017, JQSRT 186, 243–253,
+doi:10.1016/j.jqsrt.2016.06.018; <http://eodg.atm.ox.ac.uk/RFM/>) — see the
+README's Acknowledgements. Validated against ARTS 2.6 and LBLRTM v12.17.
+"""
 module IRSounderLBL
 
 # Utils

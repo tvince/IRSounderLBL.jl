@@ -193,6 +193,24 @@ test/              unit tests
 scripts/           validation drivers, ARTS comparison, plotting
 ```
 
+## Acknowledgements
+
+The architecture and much of the methodology of this package were guided by Anu
+Dudhia's [Reference Forward Model (RFM)](http://eodg.atm.ox.ac.uk/RFM/) (Dudhia,
+JQSRT 186, 243–253, 2017). The RFM's influence runs through the design: the
+pipeline decomposition (profile → layer quantities → line-by-line cross-sections
+→ optical depth → RTE → instrument convolution), the Curtis–Godson
+effective-pressure/VMR treatment of inhomogeneous layers, the plane-parallel
+non-scattering Schwarzschild formulation including the reflected-downwelling
+surface term (RFM Eq. 14), and the IASI L1C ingest, which is ported from
+Dudhia's reference reader
+[`read_iasi_l1c.py`](https://eodg.atm.ox.ac.uk/user/dudhia/iasi/read_iasi_l1c/).
+
+LBLRTM (AER) served as the validation reference for the CO₂ bands and
+contributed the CIM source function, DPTMIN criterion, TBAR layer-temperature
+convention and band-head pedestal; ARTS 2.6 was the primary full-spectrum
+validation reference.
+
 ## References
 
 - HITRAN 2020 — Gordon et al., JQSRT 277 (2022)

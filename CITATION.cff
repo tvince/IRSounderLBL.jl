@@ -24,6 +24,18 @@ keywords:
   - julia
 references:
   - type: article
+    title: "The Reference Forward Model (RFM)"
+    authors:
+      - family-names: Dudhia
+        given-names: Anu
+    journal: "Journal of Quantitative Spectroscopy and Radiative Transfer"
+    volume: 186
+    start: 243
+    end: 253
+    year: 2017
+    doi: 10.1016/j.jqsrt.2016.06.018
+    url: "http://eodg.atm.ox.ac.uk/RFM/"
+  - type: article
     title: "The HITRAN2020 molecular spectroscopic database"
     authors:
       - family-names: Gordon
@@ -32,3 +44,25 @@ references:
     volume: 277
     year: 2022
     doi: 10.1016/j.jqsrt.2021.107949
+  - type: article
+    title: "Atmospheric radiative transfer modeling: a summary of the AER codes"
+    authors:
+      - family-names: Clough
+        given-names: S. A.
+    journal: "Journal of Quantitative Spectroscopy and Radiative Transfer"
+    volume: 91
+    start: 233
+    end: 244
+    year: 2005
+    doi: 10.1016/j.jqsrt.2004.05.058
+  - type: article
+    title: "ARTS, the Atmospheric Radiative Transfer Simulator — version 2.2, the planetary toolbox edition"
+    authors:
+      - family-names: Buehler
+        given-names: S. A.
+    journal: "Geoscientific Model Development"
+    volume: 11
+    start: 1537
+    end: 1556
+    year: 2018
+    doi: 10.5194/gmd-11-1537-2018
