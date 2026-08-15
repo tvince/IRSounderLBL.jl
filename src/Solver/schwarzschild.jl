@@ -192,7 +192,8 @@ function schwarzschild_rte(ν_grid::WavenumberGrid,
         end
     end
 
-    # Reflected downwelling (RFM Eq. 14 term 3): for a non-black surface the
+    # Reflected downwelling (RFM Eq. 14 term 3; Dudhia 2017, JQSRT 186,
+    # doi:10.1016/j.jqsrt.2016.06.018): for a non-black surface the
     # atmosphere-emitted downwelling radiance reaching the surface is specularly
     # reflected with reflectivity (1−ε) and re-attenuated surface→TOA by 𝒯[1].
     # Skipped for ε_sfc==1 (term vanishes) so the blackbody path is bit-for-bit

@@ -14,6 +14,12 @@ Research code, validated against ARTS 2.6 on the IASI spectral range
 | With MT-CKD 4.3 continuum | **0.051 K** | full IASI spectrum |
 | With CO₂ line mixing (15 µm) | **1.918 K** | ceiling-limited by ARTS issue [#1130](https://github.com/atmtools/arts/issues/1130); Julia agrees with Lamouroux Fortran reference to ~1.5 % |
 
+The CO₂ bands are additionally validated against **LBLRTM v12.17** (MT_CKD 4.3):
+~0.08 K RMS at 15 µm (line-by-line) and ~0.05 K at 4.3 µm with the CO₂
+continuum. Those comparisons drove several method choices ported from LBLRTM —
+the CIM source function, the DPTMIN line-rejection criterion, the mass-weighted
+layer temperature (TBAR), and the AER band-head pedestal.
+
 ## What's in the box
 
 - HITRAN line-by-line absorption (HITRAN 2020 API + local `.par` loader)
@@ -194,6 +200,20 @@ scripts/           validation drivers, ARTS comparison, plotting
 - MT-CKD 4.3 — Mlawer et al. (AER); data files under `data/mt_ckd_h2o/` and `data/mt_ckd_co2/`
 - Niro line mixing — Niro et al., JQSRT 88 (2004)
 - Norton-Beer apodization — Norton & Beer, JOSA 66 (1976)
+- RFM — Dudhia, *The Reference Forward Model (RFM)*, JQSRT 186, 243–253 (2017),
+  [doi:10.1016/j.jqsrt.2016.06.018](https://doi.org/10.1016/j.jqsrt.2016.06.018);
+  <http://eodg.atm.ox.ac.uk/RFM/>. Source of the reflected-downwelling surface
+  formulation (RFM Eq. 14); the IASI L1C reader layout follows Dudhia's
+  [`read_iasi_l1c.py`](https://eodg.atm.ox.ac.uk/user/dudhia/iasi/read_iasi_l1c/)
+- LBLRTM — Clough et al., *Atmospheric radiative transfer modeling: a summary of
+  the AER codes*, JQSRT 91, 233–244 (2005),
+  [doi:10.1016/j.jqsrt.2004.05.058](https://doi.org/10.1016/j.jqsrt.2004.05.058);
+  <https://github.com/AER-RC/LBLRTM>. Validation reference for the CO₂ bands and
+  source of the CIM source function, DPTMIN criterion, TBAR layer-temperature
+  convention and band-head pedestal
+- ARTS 2.6 — Buehler et al., GMD 11, 1537–1556 (2018),
+  [doi:10.5194/gmd-11-1537-2018](https://doi.org/10.5194/gmd-11-1537-2018).
+  Primary full-spectrum validation reference
 
 ## Data and third-party licenses
 
