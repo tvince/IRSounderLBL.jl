@@ -1,6 +1,6 @@
 # `CIARecord::Extract` sums overlapping ν-range entries in `mdata` instead of treating them as alternative samples of σ(ν, T)
 
-**Reporter**: R. Anthony Vincent &lt;10545693+tvince@users.noreply.github.com&gt; (using Claude Opus)
+**Reporter**: R. Anthony Vincent (using Claude Opus)
 **Component**: Collision-induced absorption (`src/core/absorption/cia.cc`,
 `CIARecord::Extract`; pyarts exposes this as `CIARecord.compute_abs` and
 it is the primitive called by `propmat_clearskyAddCIA` /

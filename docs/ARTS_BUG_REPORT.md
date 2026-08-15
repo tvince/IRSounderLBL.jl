@@ -1,6 +1,6 @@
 # `abs_lines_per_speciesAdaptHitranLineMixing` produces wrong-sign / inflated Y for low-J P-branch CO₂-626 hot-band lines near 665 cm⁻¹
 
-**Reporter**: R. Anthony Vincent &lt;10545693+tvince@users.noreply.github.com&gt, (using Claude Opus);
+**Reporter**: R. Anthony Vincent (using Claude Opus)
 **Component**: HITRAN line mixing (`lm_hitran_2017`, `src/linemixing_hitran.cc`)
 **Affected method**: `abs_lines_per_speciesAdaptHitranLineMixing`
 **ARTS / pyarts version**: pyarts 2.6.18 (conda-forge build, Python 3.14, macOS arm64)
