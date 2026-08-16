@@ -5,7 +5,7 @@ coefficients (self and foreign, `nu_cm1, Cs_cm2_molec_cm1, Cf_cm2_molec_cm1,
 self_texp`) used by `h2o_continuum` in `src/CrossSections/continuum.jl`. The
 table is **derived** from AER's MT_CKD distribution (the reference coefficients
 in `absco-ref_wv-mt-ckd.nc` / `mt_ckd_h2o_module.f90`); see
-`scripts/extract_ckd43_csv.py`.
+`scripts/provenance/extract_ckd43_csv.py`.
 
 This is third-party data. It is **not** covered by the package's MIT license and
 carries AER's own terms, reproduced verbatim below as that license requires.

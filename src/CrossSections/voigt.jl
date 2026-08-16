@@ -327,7 +327,7 @@ layer's optical depth is negligible.
 
 `dptmn ≤ 0` disables rejection (returns the input unchanged). The floor is
 BT-lossless at 1e-6 (≤0.6 mK over the real IASI ILS; ~5× fewer lines per layer —
-see scripts/validate_line_rejection_bt.jl). The relative DPTFC term tested there
+see scripts/validation/validate_line_rejection_bt.jl). The relative DPTFC term tested there
 was found to bias BT for no gain, so it is not carried here.
 """
 function _reject_weak_lines(linelist::HITRANLinelist, T::Float64, p_atm::Float64,

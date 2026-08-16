@@ -6,7 +6,7 @@
 source — parsed from `contnm.f90` `BLOCK DATA BFCO2` (5003 points, V1=−4, DV=2;
 byte-identical to the AER-RC/LBLRTM master), and it also carries the XFACCO2
 (2000–2998 cm⁻¹) and bandhead-temperature (2386–2434 cm⁻¹) corrections. See
-`scripts/extract_ckd_co2.py`.
+`scripts/provenance/extract_ckd_co2.py`.
 
 This is third-party data. It is **not** covered by the package's MIT license and
 carries AER's own terms, reproduced verbatim below as that license requires.

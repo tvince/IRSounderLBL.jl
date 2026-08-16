@@ -71,7 +71,7 @@ const _CKD = DataTable(_CKD_RELPATH, _load_ckd_table)
 
 # ── MT-CKD CO₂ continuum table (Hartmann line-coupling; from contnm.f90) ─────
 # Single coefficient S(ν) on a 2 cm⁻¹ grid (−4 … 10000 cm⁻¹). Extracted from
-# LBLRTM's BLOCK DATA BFCO2 by scripts/extract_ckd_co2.py.
+# LBLRTM's BLOCK DATA BFCO2 by scripts/provenance/extract_ckd_co2.py.
 
 const _CKD_CO2_RELPATH = joinpath("mt_ckd_co2", "mt_ckd_co2_coeffs.csv")
 
@@ -83,7 +83,7 @@ function _load_ckd_co2_table(path::AbstractString)
         header = readline(f)
         ncol = length(split(header, ','))
         ncol == 4 || error("$path has $ncol columns; expected 4 " *
-                           "(nu_cm1,S,xfac,tdep_exp). Regenerate with scripts/extract_ckd_co2.py.")
+                           "(nu_cm1,S,xfac,tdep_exp). Regenerate with scripts/provenance/extract_ckd_co2.py.")
         for line in eachline(f)
             parts = split(line, ',')
             push!(nu_v,   parse(Float64, parts[1]))
@@ -222,7 +222,7 @@ sub-Lorentzian far-wing residual the truncated-Voigt LBL omits; it dominates the
 CO₂ ν₂ band wings (≈690–750 cm⁻¹).
 
 Returns zeros (with a one-time warning) if the coefficient table is absent;
-run `scripts/extract_ckd_co2.py` to regenerate it.
+run `scripts/provenance/extract_ckd_co2.py` to regenerate it.
 """
 function co2_continuum(ν_grid::WavenumberGrid,
                        vmr_co2::Float64,

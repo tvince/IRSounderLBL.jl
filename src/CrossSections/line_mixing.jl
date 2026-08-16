@@ -139,7 +139,7 @@ high-isotopologue/hot bands. `0.0` (default) processes all loaded bands (exact).
 Recommended opt-in value `1e-25`: ~1.4× end-to-end speedup at ≤0.6 mK max|ΔBT|
 (15 µm 0.33 mK / 4 µm 0.56 mK, both well under 1 mK; drops ~50% of bands —
 the weak ones with few lines). `1e-26` is ~1.1-1.2× at ≤0.09 mK if you want a
-near-lossless trim. See scripts/sweep_band_cutoff.jl for the BT/timing sweep.
+near-lossless trim. See scripts/validation/sweep_band_cutoff.jl for the BT/timing sweep.
 """
 struct VPYLineMixing <: AbstractLineMixing
     data::HITRANRelmatData
@@ -172,7 +172,7 @@ will evaluate (e.g. full IASI relmat but a 15 µm-only run).
 - `min_band_strength`: #4 cutoff — skip bands below this integrated intensity
   (`_band_eff_strength`, T_REF). `0.0` (default) = exact. Recommended opt-in `1e-25`:
   ~1.4× end-to-end at ≤0.6 mK max|ΔBT| (drops ~50% of weak bands); `1e-26` ~1.1-1.2×
-  at ≤0.09 mK. See scripts/sweep_band_cutoff.jl.
+  at ≤0.09 mK. See scripts/validation/sweep_band_cutoff.jl.
 """
 struct VPWLineMixing <: AbstractLineMixing
     data::HITRANRelmatData
@@ -796,7 +796,7 @@ Used as the default whitelist by [`VPWLineMixing`](@ref).
 # Layer-independent (T_REF fixed), so per-band LM contributions scale with it.
 # Integrated band intensity at T_REF, used by the #4 `min_band_strength` cutoff to
 # decide which coupled bands are too weak to bother evaluating. Threshold guidance
-# (see scripts/sweep_band_cutoff.jl): 1e-25 → ~1.4× end-to-end at ≤0.6 mK (drop ~50%),
+# (see scripts/validation/sweep_band_cutoff.jl): 1e-25 → ~1.4× end-to-end at ≤0.6 mK (drop ~50%),
 # 1e-26 → ~1.1-1.2× at ≤0.09 mK. Default cutoff is 0.0 (exact, all bands kept).
 # NOTE: the S-file DipoT/PopuT0 ALREADY include isotopologue abundance — do NOT
 # multiply by abundance again here (that double-count made minor-iso bands look ~1/abund

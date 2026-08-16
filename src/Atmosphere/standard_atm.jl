@@ -215,7 +215,7 @@ N2O,CH4,CO}, surface-first) into an `AtmosphericProfile`.
 """
 function _read_afgl_50lev(path::String)
     isfile(path) || error("Profile CSV not found: $path\n" *
-                          "Run scripts/build_afgl_atmospheres.py to generate it.")
+                          "Run scripts/provenance/build_afgl_atmospheres.py to generate it.")
     p   = Float64[]
     T   = Float64[]
     z   = Float64[]
@@ -260,7 +260,7 @@ The CSVs ship with the package; by default they are located through
 to read them from somewhere else instead.
 
 Data source: ARTS XML data repository (Anderson et al. 1986, AFGL-TR-86-0110).
-Generate the CSVs with scripts/build_afgl_atmospheres.py.
+Generate the CSVs with scripts/provenance/build_afgl_atmospheres.py.
 """
 function afgl_atmosphere(name::Symbol; data_dir::Union{AbstractString,Nothing} = nothing)
     name in AFGL_ATMOSPHERES ||

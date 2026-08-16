@@ -193,7 +193,7 @@ channel grid. Works for any [`Sounder`](@ref) (IASI, IASI-NG, CrIS, MTG-IRS).
                       worst-point vs a 0.0005 reference, across IASI and IASI-NG in
                       both the 15 µm and 4.3 µm bands (4.3 µm is ~0.05 mK; 15 µm,
                       with narrower cores, is the limiting ~5 mK case). See
-                      scripts/grid_convergence_iasing.jl. Auto-adapts to any sensor
+                      scripts/validation/grid_convergence_iasing.jl. Auto-adapts to any sensor
                       Δν. Set `high_res_factor` to override.
 - `high_res_factor`:  legacy override — internal over-sampling as a divisor of
                       the sensor Δν (`Δν_int = sounder.Δν / high_res_factor`). When
@@ -205,7 +205,7 @@ channel grid. Works for any [`Sounder`](@ref) (IASI, IASI-NG, CrIS, MTG-IRS).
                       when its peak OD contribution `peak_σ·vmr·Δp·N_air` falls
                       below `dptmn` — LBLRTM's DPTMIN criterion. BT-lossless at
                       1e-6 (≤0.6 mK over the IASI ILS, ~5× fewer lines; see
-                      scripts/validate_line_rejection_bt.jl). Set 0.0 to disable.
+                      scripts/validation/validate_line_rejection_bt.jl). Set 0.0 to disable.
                       Skipped on the line-mixing CO₂ path (its band coefficients
                       assume the full line set).
 - `apply_continuum`:  master switch for continua (default true)
@@ -257,7 +257,7 @@ function forward_model(prof::AtmosphericProfile,
     # The internal monochromatic grid must resolve the narrowest line cores
     # (Doppler floor ~0.004 cm⁻¹ at 4.3 µm, ~0.001 at 15 µm). `internal_dnu`
     # targets that ABSOLUTE spacing; `high_res_factor`, if given, overrides it
-    # (legacy relative divisor of the sensor Δν). See scripts/grid_convergence_iasing.jl:
+    # (legacy relative divisor of the sensor Δν). See scripts/validation/grid_convergence_iasing.jl:
     # internal 0.001 cm⁻¹ converges the ILS-convolved BT to <1e-4 K, while the old
     # high_res_factor=4 (=0.0625 cm⁻¹ for IASI) was ≈1 K off in dense bands.
     hrf = if high_res_factor !== nothing
@@ -324,7 +324,7 @@ function forward_model(prof::AtmosphericProfile,
     # ── 4. Radiative transfer ────────────────────────────────────────────
     # The default :cim source function needs the per-layer mass-weighted T
     # (T_AVE, the same TBAR LBLRTM prints); it is ~3× more accurate at native
-    # 5-km layering than :toon (see scripts/convergence_sweep_43um.jl). For the
+    # 5-km layering than :toon (see scripts/validation/convergence_sweep_43um.jl). For the
     # legacy :toon LIT, T_ave is unused; build it only for :cim.
     T_ave_for_src = if source_function == :cim
         p_lev = prof.pressure

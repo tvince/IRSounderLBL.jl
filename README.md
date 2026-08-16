@@ -140,8 +140,10 @@ ll = load_linelist("path/to/co2_645_700", 1:4; ν_min=620.0, ν_max=825.0)
 ν, R, BT = forward_model(prof, Dict{GasSpecies, HITRANLinelist}(CO2 => ll))
 ```
 
-Returns the sensor channel grid `ν` (cm⁻¹), spectral radiance `R`
-(W m⁻² sr⁻¹ (cm⁻¹)⁻¹), and brightness temperature `BT` (K).
+Returns the sensor channel grid `ν` as a `WavenumberGrid` (its channel
+wavenumbers in cm⁻¹ are the `ν.ν` field), spectral radiance `R`
+(W m⁻² sr⁻¹ (cm⁻¹)⁻¹), and brightness temperature `BT` (K), the latter two as
+plain vectors aligned with `ν.ν`.
 
 Common keyword arguments to `forward_model`:
 
@@ -163,8 +165,26 @@ it is oversampling relative to the *sensor* Δν, so it does not adapt across
 instruments. The former default of 4 (0.0625 cm⁻¹ for IASI) is ≈1 K off in
 dense bands; prefer `internal_dnu`.
 
-See `smoke_test.jl` and `scripts/` for end-to-end examples including
-line-mixing runs and ARTS comparison drivers.
+## Examples
+
+`scripts/examples/` holds a guided sequence that runs on the default 15 µm line
+lists alone:
+
+| Script | What it shows | Time |
+|---|---|---|
+| `01_forward_spectrum.jl` | Profile + line lists + instrument → a brightness-temperature spectrum | ~40 s |
+| `02_weighting_functions.jl` | The analytic Jacobian ∂BT/∂T — where each channel gets its signal | ~2 min |
+| `03_retrieval_synthetic.jl` | A closed-loop optimal-estimation temperature retrieval with its error budget | ~4 min |
+| `04_instrument_comparison.jl` | One atmosphere through IASI, IASI-NG, CrIS and MTG-IRS | ~2 min |
+
+```
+julia --project=. -t auto scripts/examples/01_forward_spectrum.jl
+```
+
+`smoke_test.jl` is a quicker health check over the same band. See
+[`scripts/README.md`](scripts/README.md) for the data-provenance and validation
+scripts, and for the `validation-scripts` branch that carries the full ARTS and
+LBLRTM comparison campaign.
 
 ## Performance
 
@@ -174,7 +194,7 @@ on an M1 Pro:
 - 6 threads: **130 s**
 - single thread: 391 s
 
-Run with `julia --project -t auto scripts/julia_bt_export.jl`. The outer
+Run with `julia --project -t auto scripts/validation/julia_bt_export.jl`. The outer
 layer loop is still sequential; parallelising it is the next opportunity.
 
 ## Layout
@@ -190,7 +210,10 @@ src/
 ├── Parallel/      backend detection (CPU / CUDA / Metal)
 └── Utils/         wavenumber grid, interpolation
 test/              unit tests
-scripts/           validation drivers, ARTS comparison, plotting
+scripts/
+├── examples/      guided, runnable examples (start here)
+├── provenance/    how the bundled data tables were generated
+└── validation/    convergence studies behind the defaults
 ```
 
 ## Acknowledgements
