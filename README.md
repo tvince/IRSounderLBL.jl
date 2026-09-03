@@ -1,5 +1,7 @@
 # IRSounderLBL.jl
 
+[![CI](https://github.com/tvince/IRSounderLBL.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/tvince/IRSounderLBL.jl/actions/workflows/CI.yml)
+
 Line-by-line thermal infrared radiance simulation for nadir-viewing
 hyperspectral Fourier transform sounders (IASI, CrIS, IASI-NG, MTG-IRS).
 
@@ -42,13 +44,15 @@ layer temperature (TBAR), and the AER band-head pedestal.
 
 ## Install
 
-The package is not yet registered. From the Julia REPL:
+Registration in the General registry is pending. Until it lands, install
+straight from the repository:
 
 ```julia
 ] add https://github.com/tvince/IRSounderLBL.jl
 ```
 
-or, for local development, `] dev /path/to/IRSounderLBL`.
+Once registered, `] add IRSounderLBL` is all that is needed. For local
+development, `] dev /path/to/IRSounderLBL`.
 
 Requires Julia ≥ 1.10. A `HITRAN_API_KEY` environment variable is needed
 if you want to fetch lines via `fetch_hitran_api`; otherwise local `.par`

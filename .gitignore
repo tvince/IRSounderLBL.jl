@@ -54,6 +54,8 @@ docs/site/
 # Large reference PDFs kept locally for reference (e.g. thesis), not in history.
 docs/*.pdf
 
-# Note: Manifest.toml is intentionally tracked to lock the dependency
-# snapshot behind the ARTS-validation results. Untrack once the package
-# is registered to General.
+# Julia: a registered package must not ship a Manifest -- it would pin
+# dependency versions for everyone who installs it. The dependency snapshot
+# behind the ARTS/LBLRTM validation numbers stays recoverable from git history
+# (the Manifest was tracked up to the commit that removed it).
+Manifest.toml
