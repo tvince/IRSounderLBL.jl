@@ -42,6 +42,7 @@ tables are loaded.
 | `extract_ckd43_csv.py` | MT-CKD 4.3 H₂O self/foreign continuum coefficients, from AER's `absco-ref_wv-mt-ckd.nc` |
 | `extract_tips.py` | TIPS-2024 partition sums → `src/HITRAN/tips2024_data.jl` |
 | `build_afgl_atmospheres.py` | The six AFGL 50-level reference atmospheres in `data/` |
+| `make_readme_figure.py` | The spectrum figure at the top of the README (`docs/assets/spectrum-*.png`) |
 
 ## validation/
 
