@@ -2,25 +2,57 @@
 
 [![CI](https://github.com/tvince/IRSounderLBL.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/tvince/IRSounderLBL.jl/actions/workflows/CI.yml)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/spectrum-dark.png">
+  <img alt="Simulated IASI brightness-temperature spectrum from 645 to 2390 per centimetre for the AFGL US Standard atmosphere at nadir, with the CO2, O3, CH4/N2O and H2O absorption bands shaded and labelled and the two atmospheric windows marked" src="docs/assets/spectrum-light.png">
+</picture>
+
 Line-by-line thermal infrared radiance simulation for nadir-viewing
 hyperspectral Fourier transform sounders (IASI, CrIS, IASI-NG, MTG-IRS).
 
 ## Status
 
-Research code, validated against ARTS 2.6 on the IASI spectral range
+Research code, verified against ARTS 2.6 on the IASI spectral range
 (645–2760 cm⁻¹):
 
 | Component | RMS vs ARTS | Notes |
 |---|---|---|
 | Line-by-line (no continua) | **0.095 K** | bias −0.028 K; ceiling-limited by ARTS layer integration |
-| With MT-CKD 4.3 continuum | **0.051 K** | full IASI spectrum |
-| With CO₂ line mixing (15 µm) | **1.918 K** | ceiling-limited by ARTS issue [#1130](https://github.com/atmtools/arts/issues/1130); Julia agrees with Lamouroux Fortran reference to ~1.5 % |
+| With MT-CKD 4.3 continuum | **0.11 K** | full IASI spectrum, CIA excluded (see note below) |
+| With CO₂ line mixing (15 µm) | **0.78 K** | first-order VP_Y, CO₂ iso 1–4 (see below); largest residual −12 K at 771.25 cm⁻¹ |
 
-The CO₂ bands are additionally validated against **LBLRTM v12.17** (MT_CKD 4.3):
+With collision-induced absorption enabled the full-spectrum RMS rises to 0.81 K,
+almost all of it between 2200 and 2760 cm⁻¹. The two codes combine the HITRAN CIA
+tables differently — in particular how the overlapping N₂–N₂ ν-range blocks in
+`N2-N2_2021.cia` are treated — so that residual measures a convention difference
+rather than line-by-line accuracy, and the continuum row above excludes CIA for
+that reason. `docs/ARTS_CIA_BUG_REPORT.md` documents the discrepancy in detail;
+it was not filed upstream and has not been independently confirmed.
+
+The CO₂ bands are additionally verified against **LBLRTM v12.17** (MT_CKD 4.3):
 ~0.08 K RMS at 15 µm (line-by-line) and ~0.05 K at 4.3 µm with the CO₂
 continuum. Those comparisons drove several method choices ported from LBLRTM —
 the CIM source function, the DPTMIN line-rejection criterion, the mass-weighted
 layer temperature (TBAR), and the AER band-head pedestal.
+
+These are code-to-code comparisons: evidence that the implementation reproduces
+established reference models, not validation against observed radiances. One of
+them did feed back upstream: it surfaced a wrong-sign Rosenkranz *Y* for CO₂-626
+hot bands near 665 cm⁻¹, confirmed and fixed in ARTS 2.6.19
+([#1130](https://github.com/atmtools/arts/issues/1130)). Julia's *Y* values agree
+with the Lamouroux `LM_calc_15um.for` reference to ~1.5 %.
+
+A second, larger discrepancy near 665 cm⁻¹ — a 33.7 K brightness-temperature
+difference — turned out to be a defect in *this* package's inputs rather than in
+ARTS. The line list lacked CO₂ isotopologue 4 (627), which ARTS obtains from the
+HITRAN line-mixing package itself. Supplying iso-4 moves the 665.00 cm⁻¹ channel
+by +34.2 K, brings the two codes to 0.36 K at that channel, and cuts the band RMS
+from 1.80 K to 0.78 K. The ν₂ Q-branch bandhead is that sensitive to a 0.07 %
+isotopologue because the main isotopologue is saturated there, so the rare one
+absorbs in the gaps between saturated lines. `download_data(:linelists)` fetches
+CO₂ iso 1–4 by default for this reason. A smaller unexplained difference remains
+near 771 cm⁻¹, where ARTS's iso-4 contribution is ~10 K and this package's is
+negligible.
 
 ## What's in the box
 
@@ -34,7 +66,7 @@ layer temperature (TBAR), and the AER band-head pedestal.
 - IASI instrument response: Gaussian apodization (L1C default) or Norton-Beer
 - Off-nadir geometry: scan-angle → local-zenith conversion
 - Standard atmospheres: US Standard, Tropical, Subarctic; 43- and 50-level AFGL
-- Analytic Jacobians (temperature, VMR, surface), validated against finite
+- Analytic Jacobians (temperature, VMR, surface), verified against finite
   differences including continuum and line-mixing coupling
 - Optimal-estimation retrieval (`optimal_estimation`) with averaging kernels,
   DOF and the Rodgers error budget; a-priori covariance builder (`build_sa`);
@@ -52,7 +84,12 @@ straight from the repository:
 ```
 
 Once registered, `] add IRSounderLBL` is all that is needed. For local
-development, `] dev /path/to/IRSounderLBL`.
+development, `] dev /path/to/IRSounderLBL`. A cloned repository ships no
+`Manifest.toml`, so resolve the dependencies once before first use:
+
+```julia
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
+```
 
 Requires Julia ≥ 1.10. A `HITRAN_API_KEY` environment variable is needed
 if you want to fetch lines via `fetch_hitran_api`; otherwise local `.par`
@@ -92,7 +129,7 @@ Line lists come from the HITRAN API, which needs a free key:
 3. `export HITRAN_API_KEY=<your key>` in your shell — never in the repo
 
 `download_data(:linelists)` defaults to the **15 µm working set** (CO₂ isotopologues
-1–4, H₂O 1–3, 620–825 cm⁻¹ — the ν₂ band the package is validated against, plus the
+1–4, H₂O 1–3, 620–825 cm⁻¹ — the ν₂ band the package is verified against, plus the
 ±25 cm⁻¹ line-wing margin). Widen it when you need to:
 
 ```julia
@@ -233,10 +270,10 @@ surface term (RFM Eq. 14), and the IASI L1C ingest, which is ported from
 Dudhia's reference reader
 [`read_iasi_l1c.py`](https://eodg.atm.ox.ac.uk/user/dudhia/iasi/read_iasi_l1c/).
 
-LBLRTM (AER) served as the validation reference for the CO₂ bands and
+LBLRTM (AER) served as the verification reference for the CO₂ bands and
 contributed the CIM source function, DPTMIN criterion, TBAR layer-temperature
 convention and band-head pedestal; ARTS 2.6 was the primary full-spectrum
-validation reference.
+verification reference.
 
 ## References
 
@@ -253,12 +290,12 @@ validation reference.
 - LBLRTM — Clough et al., *Atmospheric radiative transfer modeling: a summary of
   the AER codes*, JQSRT 91, 233–244 (2005),
   [doi:10.1016/j.jqsrt.2004.05.058](https://doi.org/10.1016/j.jqsrt.2004.05.058);
-  <https://github.com/AER-RC/LBLRTM>. Validation reference for the CO₂ bands and
+  <https://github.com/AER-RC/LBLRTM>. Verification reference for the CO₂ bands and
   source of the CIM source function, DPTMIN criterion, TBAR layer-temperature
   convention and band-head pedestal
 - ARTS 2.6 — Buehler et al., GMD 11, 1537–1556 (2018),
   [doi:10.5194/gmd-11-1537-2018](https://doi.org/10.5194/gmd-11-1537-2018).
-  Primary full-spectrum validation reference
+  Primary full-spectrum verification reference
 
 ## Data and third-party licenses
 

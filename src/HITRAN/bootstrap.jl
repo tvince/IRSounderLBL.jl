@@ -25,8 +25,11 @@ const LINELIST_DEFAULT_ν = (620.0, 825.0)
 
 """
 Species and isotopologues fetched by `download_data(:linelists)` by default.
-CO₂ iso 4 (627) matters more than its ~0.04% abundance suggests: omitting it
-leaves a spurious −8 K line-mixing artefact near 665 cm⁻¹.
+CO₂ iso 4 (627) matters far more than its 0.073 % abundance suggests: the ν₂
+Q-branch bandhead near 665 cm⁻¹ is saturated in 626, so 627 absorbs in the gaps
+between saturated lines. Omitting it is a missing-lines error, not a line-mixing
+one, and costs tens of kelvin there — +34 K at 665.00 cm⁻¹ in a clear-sky nadir
+simulation of the AFGL US Standard atmosphere.
 """
 const LINELIST_DEFAULT_SPECIES = Pair{GasSpecies,UnitRange{Int}}[
     CO2 => 1:4,

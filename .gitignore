@@ -3,6 +3,8 @@
 
 # Project artifacts (large or generated)
 *.png
+# ... except the README figures, which are committed deliberately.
+!docs/assets/*.png
 # Ignore everything under data/ ...
 data/**
 # ... but descend into its directories so the exception below can match ...

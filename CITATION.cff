@@ -4,7 +4,7 @@ title: "IRSounderLBL.jl: Line-by-line thermal infrared radiance simulation for n
 abstract: >-
   A Julia package for line-by-line simulation and optimal-estimation retrieval
   of thermal infrared spectra from nadir-viewing hyperspectral Fourier transform
-  sounders (IASI, CrIS, IASI-NG, MTG-IRS), validated against ARTS and LBLRTM.
+  sounders (IASI, CrIS, IASI-NG, MTG-IRS), verified against ARTS and LBLRTM.
 type: software
 authors:
   - given-names: Tony
