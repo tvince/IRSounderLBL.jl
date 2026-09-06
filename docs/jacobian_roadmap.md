@@ -1,7 +1,13 @@
 # Jacobian & Estimation Roadmap
 
-**Status:** design / not yet implemented (drafted 2026-06-12; corrections from a
-code audit folded in 2026-06-13 — see §2.1, §2.2, §3, §6.1, §6.4)
+**Status:** IMPLEMENTED. Everything below shipped — analytic Jacobians, optimal
+estimation, the FFT-based ILS convolution, and the line-mixing-aware ∂σ/∂{T,p} of
+§6.4 — and is covered by the test suite. This file is kept as the design record
+that the implementation was built from, not as a description of missing work; see
+the `analytic_jacobian`/`optimal_estimation` docstrings for the API as it
+actually exists.
+(Drafted 2026-06-12; corrections from a code audit folded in 2026-06-13 — see
+§2.1, §2.2, §3, §6.1, §6.4.)
 **Goal:** add analytic Jacobians (weighting functions) to the validated forward
 model so it can drive estimation/retrieval methods (optimal estimation,
 Gauss–Newton, Levenberg–Marquardt).

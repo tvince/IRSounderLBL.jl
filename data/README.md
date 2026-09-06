@@ -1,10 +1,25 @@
 # `data/` — runtime inputs and generated artifacts
 
 This directory is `.gitignore`d. Files here are either (a) downloaded from
-external sources, or (b) outputs from scripts in `scripts/`. Use this README
-as a map; regenerate anything missing rather than checking it in.
+external sources, or (b) outputs from the generator scripts named below. Use
+this README as a map; regenerate anything missing rather than checking it in.
 
 (This README itself is force-added: `git add -f data/README.md`.)
+
+> **Where the generator scripts live.** `scripts/` in this repository holds a
+> small curated set of runnable examples. The validation and provenance drivers
+> named in the tables below (`arts_validation*.py`, `julia_bt_*_export.jl`,
+> `extract_ckd*.py`, `make_lblrtm_tape5.py`, `dump_*_Y_near_665.*`, …) were moved
+> to the `validation-scripts` branch, which preserves them as the record of how
+> each artifact was produced. Fetch them with:
+>
+> ```
+> git fetch origin validation-scripts
+> git checkout origin/validation-scripts -- scripts/
+> ```
+>
+> Paths below are given relative to that branch. Several also need tools this
+> repository does not ship (a `pyarts` environment, an LBLRTM build).
 
 ## External inputs (download, do not regenerate)
 
