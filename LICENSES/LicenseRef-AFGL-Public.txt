@@ -1,0 +1,18 @@
+LicenseRef-AFGL-Public
+
+AFGL standard atmospheres — public reference profiles.
+
+The AFGL model atmospheres were published by the United States Air Force
+Geophysics Laboratory as a technical report:
+
+  Anderson, G. P., Clough, S. A., Kneizys, F. X., Chetwynd, J. H., and
+  Shettle, E. P. (1986). AFGL Atmospheric Constituent Profiles (0-120 km).
+  AFGL-TR-86-0110, Air Force Geophysics Laboratory, Hanscom AFB, MA.
+
+They are a US Government work, are reproduced throughout the atmospheric
+radiative-transfer literature and in the reference data of ARTS, LBLRTM and
+RFM among others, and are freely redistributable. No usage restriction is
+asserted over them here; cite Anderson et al. (1986).
+
+The CSV files under data/ are a reformatting of those profiles onto a 50-level
+grid. See data/README.md for provenance.

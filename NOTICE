@@ -9,6 +9,12 @@ governed by the separate terms of its respective providers, summarized below.
 Nothing in the MIT LICENSE should be read as granting any right in, or
 relicensing, the data described here.
 
+The same information is stated per-path, in machine-readable form, in REUSE.toml
+(https://reuse.software), with the full text of every license involved under
+LICENSES/. That file is the place to look if you are packaging this software or
+auditing it automatically; the prose below is the place to look for provenance,
+citation requirements and why each dataset is here.
+
 ================================================================================
 THIRD-PARTY DATA — PROVENANCE AND TERMS
 ================================================================================
