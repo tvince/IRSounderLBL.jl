@@ -6,10 +6,15 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR).
+# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR) — but never
+# on main. Every merge's result there is a record worth keeping, and a cancelled
+# run reads as "failing" on the README badge: merging two PRs 47 s apart on
+# 2026-09-06 killed the first one's run and turned the badge red with nothing
+# actually broken. Julia 1.12/ubuntu can take hours (see the matrix comment below),
+# so the window in which merges collide is wide.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -22,6 +27,11 @@ jobs:
       matrix:
         version:
           - '1.10'   # LTS  (Project.toml [compat] lower bound)
+          # Known slow on ubuntu: 184 min of test time vs 22 min for 1.10 on the
+          # same runner (8.2×), where 1.12/macOS is only ~2.3× its 1.10 twin.
+          # Undiagnosed — one sample, possibly a noisy shared runner. A job
+          # sitting at 1-3 h here is expected, not hung; the per-testset timings
+          # (runtests.jl `verbose=true`) are there to localise it next time.
           - '1.12'   # current
         os:
           - ubuntu-latest   # Linux; also exercises the non-functional-GPU fallback
