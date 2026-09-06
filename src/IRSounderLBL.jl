@@ -118,7 +118,7 @@ export Sounder, sounder_grid
 export IASIInstrument, IASINGInstrument, CrISInstrument, MTGIRSInstrument
 export iasi_grid   # deprecated alias for sounder_grid
 export ils_kernel, apply_ils, apply_ils_fft, ILSConvolver, ils_apply!
-export NORTON_BEER_COEFFS, norton_beer_apodization
+export NORTON_BEER_COEFFS, norton_beer_apodization, HAMMING_A0
 export forward_model
 export iasi_forward_model   # deprecated alias for forward_model
 export SounderNoiseCovariance, read_iasi_ncm, load_noise_covariance
