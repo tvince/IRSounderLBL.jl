@@ -76,16 +76,14 @@ negligible.
 
 ## Install
 
-Registration in the General registry is pending. Until it lands, install
-straight from the repository:
+The package is registered in the General registry:
 
 ```julia
-] add https://github.com/tvince/IRSounderLBL.jl
+] add IRSounderLBL
 ```
 
-Once registered, `] add IRSounderLBL` is all that is needed. For local
-development, `] dev /path/to/IRSounderLBL`. A cloned repository ships no
-`Manifest.toml`, so resolve the dependencies once before first use:
+For local development, `] dev /path/to/IRSounderLBL`. A cloned repository ships
+no `Manifest.toml`, so resolve the dependencies once before first use:
 
 ```julia
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
@@ -267,8 +265,8 @@ pipeline decomposition (profile → layer quantities → line-by-line cross-sect
 effective-pressure/VMR treatment of inhomogeneous layers, the plane-parallel
 non-scattering Schwarzschild formulation including the reflected-downwelling
 surface term (RFM Eq. 14), and the IASI L1C ingest, which is ported from
-Dudhia's reference reader
-[`read_iasi_l1c.py`](https://eodg.atm.ox.ac.uk/user/dudhia/iasi/read_iasi_l1c/).
+Dudhia's reference reader `read_iasi_l1c.py`, listed under
+[EODG IASI Resources](https://eodg.atm.ox.ac.uk/user/dudhia/iasi/).
 
 LBLRTM (AER) served as the verification reference for the CO₂ bands and
 contributed the CIM source function, DPTMIN criterion, TBAR layer-temperature
@@ -286,7 +284,9 @@ verification reference.
   [doi:10.1016/j.jqsrt.2016.06.018](https://doi.org/10.1016/j.jqsrt.2016.06.018);
   <http://eodg.atm.ox.ac.uk/RFM/>. Source of the reflected-downwelling surface
   formulation (RFM Eq. 14); the IASI L1C reader layout follows Dudhia's
-  [`read_iasi_l1c.py`](https://eodg.atm.ox.ac.uk/user/dudhia/iasi/read_iasi_l1c/)
+  `read_iasi_l1c.py`, listed under
+  [EODG IASI Resources](https://eodg.atm.ox.ac.uk/user/dudhia/iasi/) (the tool's
+  own page is unreachable at the time of writing)
 - LBLRTM — Clough et al., *Atmospheric radiative transfer modeling: a summary of
   the AER codes*, JQSRT 91, 233–244 (2005),
   [doi:10.1016/j.jqsrt.2004.05.058](https://doi.org/10.1016/j.jqsrt.2004.05.058);
