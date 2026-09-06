@@ -1,0 +1,44 @@
+name: TagBot
+
+# Creates the git tag and GitHub release for each version merged into the
+# General registry. The registry's "TagBot Triggers" job posts a comment here
+# after a merge; TagBot reads it and tags the exact commit that was registered.
+# Without this workflow the package registers fine but is never tagged, which is
+# what happened to v0.1.0 (tagged by hand after the fact).
+on:
+  issue_comment:
+    types:
+      - created
+  workflow_dispatch:
+    inputs:
+      lookback:
+        description: Days of registry history to re-scan for untagged releases
+        default: '3'
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  deployments: read
+  discussions: read
+  issues: read
+  packages: read
+  pages: read
+  pull-requests: read
+  repository-projects: read
+  security-events: read
+  statuses: read
+
+jobs:
+  TagBot:
+    # Only the registry's bot (or a manual dispatch) may tag; this keeps a
+    # comment from any other account from triggering a release.
+    if: github.event_name == 'workflow_dispatch' || github.actor == 'JuliaTagBot'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: JuliaRegistries/TagBot@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: lets TagBot trigger a Documenter docs build on tag once
+          # Documenter is set up. Harmless while the secret is unset.
+          ssh: ${{ secrets.DOCUMENTER_KEY }}
