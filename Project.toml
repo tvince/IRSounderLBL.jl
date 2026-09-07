@@ -1,6 +1,6 @@
 name = "IRSounderLBL"
 uuid = "382fb126-c9cc-40b0-a4a6-0504c6dc0b4b"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Tony Vincent"]
 
 [deps]

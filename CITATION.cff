@@ -10,8 +10,8 @@ authors:
   - given-names: Tony
     family-names: Vincent
     alias: tvince
-version: 0.1.0
-date-released: 2026-09-06
+version: 0.1.1
+date-released: 2026-09-07
 license: MIT
 repository-code: "https://github.com/tvince/IRSounderLBL.jl"
 keywords:
