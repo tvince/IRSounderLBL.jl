@@ -19,7 +19,7 @@ Research code, verified against ARTS 2.6 on the IASI spectral range
 |---|---|---|
 | Line-by-line (no continua) | **0.095 K** | bias −0.028 K; ceiling-limited by ARTS layer integration |
 | With MT-CKD 4.3 continuum | **0.11 K** | full IASI spectrum, CIA excluded (see note below) |
-| With CO₂ line mixing (15 µm) | **0.78 K** | first-order VP_Y, CO₂ iso 1–4 (see below); largest residual −12 K at 771.25 cm⁻¹ |
+| With CO₂ line mixing (15 µm) | **0.78 K** | first-order VP_Y, CO₂ iso 1–4; largest residual −12 K at 771.25 cm⁻¹, unexplained |
 
 With collision-induced absorption enabled the full-spectrum RMS rises to 0.81 K,
 almost all of it between 2200 and 2760 cm⁻¹. The two codes combine the HITRAN CIA
@@ -41,18 +41,6 @@ them did feed back upstream: it surfaced a wrong-sign Rosenkranz *Y* for CO₂-6
 hot bands near 665 cm⁻¹, confirmed and fixed in ARTS 2.6.19
 ([#1130](https://github.com/atmtools/arts/issues/1130)). Julia's *Y* values agree
 with the Lamouroux `LM_calc_15um.for` reference to ~1.5 %.
-
-A second, larger discrepancy near 665 cm⁻¹ — a 33.7 K brightness-temperature
-difference — turned out to be a defect in *this* package's inputs rather than in
-ARTS. The line list lacked CO₂ isotopologue 4 (627), which ARTS obtains from the
-HITRAN line-mixing package itself. Supplying iso-4 moves the 665.00 cm⁻¹ channel
-by +34.2 K, brings the two codes to 0.36 K at that channel, and cuts the band RMS
-from 1.80 K to 0.78 K. The ν₂ Q-branch bandhead is that sensitive to a 0.07 %
-isotopologue because the main isotopologue is saturated there, so the rare one
-absorbs in the gaps between saturated lines. `download_data(:linelists)` fetches
-CO₂ iso 1–4 by default for this reason. A smaller unexplained difference remains
-near 771 cm⁻¹, where ARTS's iso-4 contribution is ~10 K and this package's is
-negligible.
 
 ## What's in the box
 
@@ -76,14 +64,25 @@ negligible.
 
 ## Install
 
-The package is registered in the General registry:
+The package is registered in the General registry. From the Julia REPL, press
+`]` to enter package mode (the prompt becomes `pkg>`), then:
 
 ```julia
 ] add IRSounderLBL
 ```
 
-For local development, `] dev /path/to/IRSounderLBL`. A cloned repository ships
-no `Manifest.toml`, so resolve the dependencies once before first use:
+`]` is a REPL keystroke, not part of the command, and it does nothing outside an
+interactive session. In a script, a `julia -e` invocation, a Dockerfile or a CI
+step, use the function form instead:
+
+```julia
+using Pkg
+Pkg.add("IRSounderLBL")
+```
+
+The two do the same thing. For local development, `] dev /path/to/IRSounderLBL`
+(or `Pkg.develop(path="/path/to/IRSounderLBL")`). A cloned repository ships no
+`Manifest.toml`, so resolve the dependencies once before first use:
 
 ```julia
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
@@ -110,6 +109,13 @@ data_status()
 download_data()              # HITRAN CIA tables, ~12 MB, SHA-256 verified, no key
 download_data(:linelists)    # HITRAN line lists — needs a free API key (below)
 ```
+
+`download_data(:linelists)` fetches CO₂ isotopologues 1–4 rather than just the
+main one. This matters more than the 0.07 % abundance of iso-4 (627) suggests: at
+the ν₂ Q-branch bandhead near 665 cm⁻¹ the main isotopologue is saturated, so a
+rare one absorbs in the gaps between saturated lines and moves that channel by
+tens of kelvin. If you assemble a line list by hand, include the minor
+isotopologues.
 
 Then the forward model runs:
 
