@@ -1,0 +1,56 @@
+# Machine-readable licensing map, in the REUSE format (https://reuse.software).
+#
+# Why this file exists: the package's source code is MIT, but it bundles three
+# sets of third-party scientific reference data on different terms — one of
+# which (AER's MT-CKD continuum tables) is research-use only and therefore not
+# OSI-approved. NOTICE explains that in prose; this file states the same thing
+# per-path so a tool, or a downstream packager, can determine the terms of any
+# file without reading English.
+#
+# Paths are covered by glob rather than by per-file SPDX headers, so that data
+# files stay byte-identical to what the provenance scripts produce and source
+# files stay uncluttered.
+#
+# NOTE ON SCOPE: this declares licensing for every path in the repository, but
+# individual source files carry no SPDX headers, so `reuse lint` will report
+# them as uncommented. The map below is the authoritative statement; see NOTICE
+# for the full terms, citation requirements and provenance of each dataset.
+
+version = 1
+
+# ── Default: everything in this repository is the package's own MIT-licensed work
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Tony Vincent"
+SPDX-License-Identifier = "MIT"
+
+# ── MT-CKD continuum coefficient tables — AER research-use terms, NOT OSI ──────
+# Derived from AER's MT_CKD/LBLRTM distribution by scripts/provenance/.
+# Redistribution is permitted because AER's copyright notice travels with them
+# (data/mt_ckd_*/SOURCE.md); commercial use requires AER's written consent.
+# This is the sole reason the distribution as a whole is not OSI open source.
+[[annotations]]
+path = [
+    "data/mt_ckd_h2o/mt_ckd43_h2o_coeffs.csv",
+    "data/mt_ckd_co2/mt_ckd_co2_coeffs.csv",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "Atmospheric and Environmental Research, Inc. (AER)"
+SPDX-License-Identifier = "LicenseRef-AER-Research"
+
+# ── TIPS-2024 partition sums — CC-BY-4.0, redistributable incl. modified ──────
+# A modified subset (46 isotopologues of 9 molecules, 70-400 K) reformatted as a
+# Julia Dict; the modification is stated in the file header, as CC-BY requires.
+[[annotations]]
+path = "src/HITRAN/tips2024_data.jl"
+precedence = "override"
+SPDX-FileCopyrightText = "R. R. Gamache et al., TIPS-2024 v1.2 (doi:10.5281/zenodo.17191976)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+# ── AFGL standard atmospheres — public reference profiles ─────────────────────
+[[annotations]]
+path = "data/afgl_*_50lev.csv"
+precedence = "override"
+SPDX-FileCopyrightText = "Anderson et al., AFGL-TR-86-0110 (1986)"
+SPDX-License-Identifier = "LicenseRef-AFGL-Public"

@@ -302,7 +302,9 @@ verification reference.
 The MIT license below covers the **software only**. It does not extend to the
 spectroscopic and atmospheric reference data the package reads at runtime, each
 of which carries its provider's own usage and citation terms. See the
-[`NOTICE`](NOTICE) file for the full breakdown; the short version:
+[`NOTICE`](NOTICE) file for the full breakdown, or [`REUSE.toml`](REUSE.toml)
+for the same thing per-path in machine-readable form, with full license texts
+under [`LICENSES/`](LICENSES). The short version:
 
 | Data | Source | Bundled? | Redistribution | You must cite |
 |---|---|---|---|---|
