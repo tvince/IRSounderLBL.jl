@@ -96,8 +96,13 @@ CrIS (Cross-track Infrared Sounder) on Suomi-NPP / JPSS, Full Spectral Resolutio
 - `:lwir` 650–1095 cm⁻¹, `:mwir` 1210–1750 cm⁻¹, `:swir` 2155–2550 cm⁻¹.
 `:full` (default) spans 650–2550 cm⁻¹ as one grid — the two inter-band gaps
 (1095–1210, 1750–2155 cm⁻¹) are simulated and should be dropped with
-[`exclude_channels`](@ref). CrIS SDR is unapodized (pure sinc), so `fwhm_gauss`
-defaults to 0; pass the mission Hamming spec if you apodize.
+[`exclude_channels`](@ref).
+
+CrIS SDR is delivered unapodized (pure sinc), which is what `fwhm_gauss = 0`
+gives you. Most users apply Hamming apodization before analysis; to match them,
+pass `apodization = :hamming` to the forward model rather than setting
+`fwhm_gauss` — that keyword is the width of a *Gaussian* taper (the IASI
+convention) and will not produce a Hamming ILS. See [`ils_kernel`](@ref).
 """
 function CrISInstrument(; band::Symbol = :full, fwhm_gauss::Real = 0.0)
     lo, hi = band === :full  ? (650.0, 2550.0) :
@@ -116,7 +121,9 @@ MTG-IRS (Meteosat Third Generation InfraRed Sounder) on MTG-S, two bands at
 Δν = 0.625 cm⁻¹, OPD 0.8 cm:
 - `:lwir` 700–1210 cm⁻¹, `:mwir` 1600–2175 cm⁻¹.
 `:full` (default) spans 700–2175 cm⁻¹ as one grid; drop the 1210–1600 cm⁻¹ gap
-with [`exclude_channels`](@ref).
+with [`exclude_channels`](@ref). Like CrIS, MTG-IRS L1 is unapodized, so
+`fwhm_gauss` defaults to 0; choose a taper with the forward model's
+`apodization` keyword.
 """
 function MTGIRSInstrument(; band::Symbol = :full, fwhm_gauss::Real = 0.0)
     lo, hi = band === :full ? (700.0, 2175.0) :
@@ -214,6 +221,7 @@ channel grid. Works for any [`Sounder`](@ref) (IASI, IASI-NG, CrIS, MTG-IRS).
                       (default all). E.g. `(:co2,)` isolates the MT-CKD CO₂ continuum.
 - `with_ils`:         convolve with the ILS before resampling (default true)
 - `apodization`:      ILS apodization style: `:gaussian` (default, matches IASI L1C),
+                      `:hamming` (the CrIS convention), or
                       `:norton_beer_weak`/`_medium`/`_strong` for alternative tapers
 - `line_mixing`:      CO2 line-mixing model, e.g. `VPYLineMixing(relmat)`; `nothing` (default) disables LM
 - `T_method`:         per-layer effective-T rule for the LBL cross-section:

@@ -1,13 +1,16 @@
 """
-IASI Instrument Line Shape (ILS) — Norton-Beer apodization.
+Instrument Line Shape (ILS) for Fourier transform spectrometers.
 
-IASI is a Fourier Transform Spectrometer.  The raw (unapodized) ILS is a
-sinc function.  The Norton-Beer apodization functions (Strong, Medium, Weak)
-reduce side-lobes at the cost of slightly lower spectral resolution.
+The raw (unapodized) ILS is a sinc function.  Apodization tapers the
+interferogram before transforming, trading spectral resolution for side-lobe
+suppression.  Four tapers are available: Gaussian (the IASI L1C convention),
+the three Norton-Beer recipes, and Hamming (the CrIS convention).
 
-Reference:
+References:
   Norton & Beer (1976), JOSA 66, 259–264.
   Niro et al. (2005), J. Mol. Spectrosc. 230, 214–233.
+  Blackman & Tukey (1958), *The Measurement of Power Spectra* — the 0.54/0.46
+  raised cosine, universally called the Hamming window.
 """
 
 """
@@ -22,6 +25,10 @@ The apodization function is:
 # grid padding (`_internal_grid`) so every requested channel sees full kernel
 # support after convolution. Keep the two in lock-step by referencing this const.
 const ILS_HALFWIDTH_CM = 16.0
+
+# Hamming taper coefficients, A(L) = A0 + (1−A0)·cos(π L / L_max).  The classic
+# 0.54/0.46 raised cosine: unity at zero OPD, 0.08 at the end of the sweep.
+const HAMMING_A0 = 0.54
 
 const NORTON_BEER_COEFFS = Dict(
     :norton_beer_weak   => (C0=0.384093, C2=0.087577, C4=0.528330),
@@ -48,8 +55,8 @@ end
                apodization=:gaussian, n_pts=2048) -> (δν_arr, ils)
 
 Compute the ILS as the Fourier transform of an apodized rectangular OPD
-window.  Supports IASI-style Gaussian apodization (default) and the three
-Norton-Beer recipes.
+window.  Supports IASI-style Gaussian apodization (default), the three
+Norton-Beer recipes, and CrIS-style Hamming.
 
 **Physical model**
 
@@ -67,6 +74,19 @@ Apodization options:
 - `:norton_beer_weak` / `:norton_beer_medium` / `:norton_beer_strong` —
   Norton & Beer (1976) polynomial taper.  A(L) = C0 + C2 (1−x²)² + C4 (1−x²)⁴
   with x = L / `opd_max`.  Side-lobe-optimised; `fwhm_gauss` is ignored.
+- `:hamming` — the CrIS convention.  A(L) = 0.54 + 0.46 cos(π L / `opd_max`),
+  the 0.54/0.46 raised cosine.  It suppresses the peak side lobe from −13.3 dB
+  (the bare sinc) to about −42 dB, at the cost of doubling the null-to-null
+  main-lobe width — the FWHM grows by roughly half.  `fwhm_gauss` is ignored.
+
+  Equivalently — and this is how CrIS SDR users usually meet it — Hamming
+  apodization is a three-point convolution `[0.23, 0.54, 0.23]` applied to the
+  unapodized channel radiances.  The two are the same operation: the transform
+  of that three-tap kernel is `0.54 + 0.46 cos(2π L Δν)`, which equals the taper
+  above whenever `Δν = 1/(2 opd_max)`, i.e. at full spectral resolution.  CrIS
+  FSR satisfies this exactly (Δν = 0.625 cm⁻¹, OPD 0.8 cm).  Apply it here, in
+  the OPD domain, rather than convolving the output spectrum — doing both
+  apodizes twice.
 
 # Arguments
 - `Δν`:           spectral grid spacing of the high-res internal grid (cm⁻¹)
@@ -92,8 +112,10 @@ function ils_kernel(Δν::Float64,
         [exp(-2π^2 * σ^2 * L^2) for L in opd]
     elseif haskey(NORTON_BEER_COEFFS, apodization)
         [norton_beer_apodization(L / opd_max, apodization) for L in opd]
+    elseif apodization === :hamming
+        [HAMMING_A0 + (1.0 - HAMMING_A0) * cos(π * L / opd_max) for L in opd]
     else
-        error("Unknown apodization $(apodization); expected :gaussian or one of $(collect(keys(NORTON_BEER_COEFFS)))")
+        error("Unknown apodization $(apodization); expected :gaussian, :hamming, or one of $(collect(keys(NORTON_BEER_COEFFS)))")
     end
 
     # Spectral offset grid: cover ±ILS_HALFWIDTH_CM at Δν spacing

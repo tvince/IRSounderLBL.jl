@@ -506,6 +506,57 @@ using Aqua
         @test_throws ErrorException ils_kernel(0.25, 2.0, 0.5; apodization=:bogus)
     end
 
+    # ── Hamming apodization (the CrIS convention) ─────────────────────────
+    @testset "Hamming ILS" begin
+        # CrIS FSR geometry: OPD 0.8 cm, channel spacing 0.625 cm⁻¹.
+        opd, Δν_hi = 0.8, 0.01
+        _, kern_h = ils_kernel(Δν_hi, opd, 0.0; apodization=:hamming)
+
+        # Area-normalised, symmetric, peak-centred, like every other taper
+        @test sum(kern_h) * Δν_hi ≈ 1.0 rtol=1e-2
+        @test kern_h ≈ reverse(kern_h) rtol=1e-6
+        @test argmax(kern_h) == (length(kern_h) + 1) ÷ 2
+
+        # Distinct from the tapers it is most likely to be confused with
+        _, kern_g = ils_kernel(Δν_hi, opd, 0.0; apodization=:gaussian)
+        _, kern_n = ils_kernel(Δν_hi, opd, 0.0; apodization=:norton_beer_medium)
+        @test !(kern_h ≈ kern_g)
+        @test !(kern_h ≈ kern_n)
+
+        # The point of Hamming: the side lobes are crushed relative to the bare
+        # sinc.  fwhm_gauss = 0 makes :gaussian the unapodized sinc, so that is
+        # the reference.  Measure each taper beyond ITS OWN main lobe — Hamming
+        # doubles the null-to-null width, so the sinc's first zero at
+        # δν = 1/(2·opd) still falls inside Hamming's main lobe.
+        δν, _ = ils_kernel(Δν_hi, opd, 0.0; apodization=:gaussian)
+        peak_sidelobe(k, first_zero) =
+            maximum(abs.(k[abs.(δν) .> 1.15 * first_zero])) / maximum(k)
+        sinc_lobe = peak_sidelobe(kern_g, 1.0 / (2.0 * opd))
+        hamm_lobe = peak_sidelobe(kern_h, 1.0 / opd)
+
+        # Textbook values: −13.3 dB for the rectangular window, −42.7 dB for
+        # Hamming.  Bracket both rather than pinning them exactly.
+        @test 0.20 < sinc_lobe < 0.23          # ≈ −13.3 dB
+        @test 0.005 < hamm_lobe < 0.012        # ≈ −42   dB
+        @test hamm_lobe < sinc_lobe / 20
+
+        # Hamming widens the main lobe, so the area-normalised peak is lower.
+        @test maximum(kern_h) < maximum(kern_g)
+
+        # Taper endpoints: A(0) = 1, A(opd_max) = 0.08 (the 0.54/0.46 cosine)
+        @test HAMMING_A0 + (1 - HAMMING_A0) * cos(0.0) ≈ 1.0
+        @test HAMMING_A0 + (1 - HAMMING_A0) * cos(π) ≈ 0.08 atol=1e-12
+
+        # Equivalence with the [0.23, 0.54, 0.23] three-point spectral kernel
+        # that CrIS SDR users apply.  The transform of that kernel is
+        # 0.54 + 0.46 cos(2π L Δν); at FSR (Δν = 1/(2·opd)) it is the taper.
+        Δν_ch = 1.0 / (2.0 * opd)
+        for L in range(0.0, opd; length=17)
+            @test 0.54 + 2 * 0.23 * cos(2π * L * Δν_ch) ≈
+                  HAMMING_A0 + (1 - HAMMING_A0) * cos(π * L / opd) atol=1e-12
+        end
+    end
+
     # ── Norton-Beer (kept for reference) ──────────────────────────────────
     @testset "Norton-Beer Apodization" begin
         for style in keys(NORTON_BEER_COEFFS)

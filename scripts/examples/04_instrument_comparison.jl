@@ -9,6 +9,11 @@
 # All four are compared over 700–800 cm⁻¹, the range every one of them covers,
 # so the only differences are sampling, optical path difference and apodization.
 #
+# Note what this is a comparison OF: each mission's L1 product as delivered, not
+# the instruments stripped to their optics. CrIS and MTG-IRS ship unapodized, and
+# are run that way here, but CrIS users conventionally apply Hamming before
+# analysis. Pass `apodization = :hamming` to `forward_model` to see that version.
+#
 # Data needed: the default 15 µm line-list set (see 01_forward_spectrum.jl).
 # Run:  julia --project=. -t auto scripts/examples/04_instrument_comparison.jl
 # Time: ~2 min on an M1 Pro with 6 threads.
@@ -70,6 +75,14 @@ end
 # CrIS and MTG-IRS report identical numbers because their LWIR specifications
 # coincide — both 0.625 cm⁻¹ sampling, 0.8 cm OPD, unapodized. Over this window
 # they are the same instrument.
+#
+# The contrast ranking below is therefore a statement about product conventions
+# rather than about which instrument is sharper. Apodize CrIS with Hamming, as
+# its users do, and it stops being the high-contrast one: over this window its
+# BT range falls 67.93 K → 64.47 K, below both IASI (64.90 K) and IASI-NG
+# (65.92 K). The cost is modest — about 5% — because at 0.625 cm⁻¹ over a dense
+# CO₂ band the channel-to-channel structure is mostly real absorption, not sinc
+# ringing; the side-lobe suppression is what you are buying, not resolution.
 println("\nWhat each instrument resolves over 700–800 cm⁻¹")
 println("  mission     channels   BT range (K)   coldest (K)   std (K)")
 for (name, _) in missions
