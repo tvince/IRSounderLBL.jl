@@ -64,14 +64,25 @@ with the Lamouroux `LM_calc_15um.for` reference to ~1.5 %.
 
 ## Install
 
-The package is registered in the General registry:
+The package is registered in the General registry. From the Julia REPL, press
+`]` to enter package mode (the prompt becomes `pkg>`), then:
 
 ```julia
 ] add IRSounderLBL
 ```
 
-For local development, `] dev /path/to/IRSounderLBL`. A cloned repository ships
-no `Manifest.toml`, so resolve the dependencies once before first use:
+`]` is a REPL keystroke, not part of the command, and it does nothing outside an
+interactive session. In a script, a `julia -e` invocation, a Dockerfile or a CI
+step, use the function form instead:
+
+```julia
+using Pkg
+Pkg.add("IRSounderLBL")
+```
+
+The two do the same thing. For local development, `] dev /path/to/IRSounderLBL`
+(or `Pkg.develop(path="/path/to/IRSounderLBL")`). A cloned repository ships no
+`Manifest.toml`, so resolve the dependencies once before first use:
 
 ```julia
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
