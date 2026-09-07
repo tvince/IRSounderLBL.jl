@@ -3,7 +3,11 @@ using IRSounderLBL
 using LinearAlgebra
 using Aqua
 
-@testset "IRSounderLBL.jl" begin
+# `verbose=true` prints a per-testset row with its own Time column. Without it
+# the suite emits nothing between precompilation and the final summary, which
+# made the Julia 1.12/ubuntu slowdown (8.2× its 1.10 twin on the same runner,
+# 3h08m in the first public CI run) impossible to localise from the logs.
+@testset "IRSounderLBL.jl" verbose=true begin
 
     # ── Aqua.jl package-quality checks ────────────────────────────────────
     @testset "Aqua quality" begin
